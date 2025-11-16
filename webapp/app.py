@@ -6,15 +6,19 @@ from datetime import datetime, timedelta
 # 将项目根目录添加到Python路径中
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from database.connection import get_db, engine
-from database.models import EconomicIndicator, EconomicDataPoint, IndicatorCategory
+# 使用项目根目录的数据库文件
+DATABASE_URL = "sqlite:///" + os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fomc_data.db")
+
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy import create_engine, func
+from database.models import EconomicIndicator, EconomicDataPoint, IndicatorCategory
+from sqlalchemy import func
+
+# 创建引擎和会话
+engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 app = Flask(__name__, template_folder='templates')
-
-# 创建会话工厂
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db_session():
     """获取数据库会话"""
@@ -31,8 +35,8 @@ def get_indicators():
     try:
         db = get_db_session()
         
-        # 获取所有顶级分类（板块）
-        top_categories = db.query(IndicatorCategory).filter(IndicatorCategory.parent_id.is_(None)).all()
+        # 获取所有顶级分类（板块），按照sort_order排序
+        top_categories = db.query(IndicatorCategory).filter(IndicatorCategory.parent_id.is_(None)).order_by(IndicatorCategory.sort_order).all()
         
         def build_category_hierarchy(category):
             """递归构建分类层级结构"""
@@ -40,17 +44,18 @@ def get_indicators():
                 'id': category.id,
                 'name': category.name,
                 'level': category.level,
+                'sort_order': category.sort_order,
                 'type': 'category',
                 'children': []
             }
             
-            # 获取子分类
-            child_categories = db.query(IndicatorCategory).filter(IndicatorCategory.parent_id == category.id).all()
+            # 获取子分类，按照sort_order排序
+            child_categories = db.query(IndicatorCategory).filter(IndicatorCategory.parent_id == category.id).order_by(IndicatorCategory.sort_order).all()
             for child in child_categories:
                 result['children'].append(build_category_hierarchy(child))
             
-            # 获取该分类下的指标
-            indicators = db.query(EconomicIndicator).filter(EconomicIndicator.category_id == category.id).all()
+            # 获取该分类下的指标，按照sort_order排序
+            indicators = db.query(EconomicIndicator).filter(EconomicIndicator.category_id == category.id).order_by(EconomicIndicator.sort_order).all()
             for indicator in indicators:
                 result['children'].append({
                     'id': indicator.id,
@@ -58,6 +63,8 @@ def get_indicators():
                     'code': indicator.code,
                     'english_name': indicator.english_name,
                     'units': indicator.units,
+                    'fred_url': indicator.fred_url,
+                    'sort_order': indicator.sort_order,
                     'type': 'indicator'
                 })
             
@@ -100,6 +107,7 @@ def get_summary():
                 'name': indicator.name,
                 'code': indicator.code,
                 'units': indicator.units,
+                'fred_url': indicator.fred_url,
                 'latest_value': latest_data_point.value if latest_data_point else None,
                 'latest_date': latest_data_point.date.strftime('%Y-%m-%d') if latest_data_point else None,
                 'data_point_count': data_point_count
@@ -188,13 +196,14 @@ def get_chart_data():
         db = get_db_session()
         
         # 获取指标信息
-        indicator = db.query(EconomicIndicator.name).filter(EconomicIndicator.id == indicator_id).first()
+        indicator = db.query(EconomicIndicator.name, EconomicIndicator.units).filter(EconomicIndicator.id == indicator_id).first()
         
         if not indicator:
             db.close()
             return jsonify({'error': '未找到指定的指标'}), 404
         
         indicator_name = indicator[0]
+        indicator_units = indicator[1]
         
         # 构建查询
         query = db.query(EconomicDataPoint.date, EconomicDataPoint.value)\
@@ -227,6 +236,7 @@ def get_chart_data():
         db.close()
         return jsonify({
             'indicator_name': indicator_name,
+            'indicator_units': indicator_units,
             'dates': dates,
             'values': values
         })

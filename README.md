@@ -22,14 +22,15 @@ FOMC/
 │   └── cpi_weights.csv    # CPI权重数据
 ├── webapp/                 # Web应用程序
 │   ├── app.py             # Flask应用程序
+│   ├── fomc_data.db       # 数据库文件
 │   └── templates/         # HTML模板
 ├── .env                   # 环境变量配置
+├── fomc_data.db           # SQLite数据库文件
 ├── init_database.py       # 数据库初始化脚本
 ├── process_all_indicators.py  # 批量处理所有经济指标
 ├── requirements.txt       # Python依赖包
-├── check_database.py      # 检查数据库内容
-├── view_data.py           # 查看数据脚本
-└── view_schema.py         # 查看数据库结构脚本
+├── setup_categories.py    # 设置经济指标分类
+└── update_database.py     # 更新数据库脚本
 ```
 
 ## 安装依赖
@@ -51,27 +52,22 @@ FRED_API_KEY=your_api_key_here
 python init_database.py
 ```
 
-### 2. 批量处理所有经济指标（推荐）
+### 2. 设置经济指标分类
+```bash
+python setup_categories.py
+```
+
+### 3. 批量处理所有经济指标（推荐）
 ```bash
 python process_all_indicators.py
 ```
 
-### 3. 检查数据库内容
+### 4. 更新数据库
 ```bash
-python check_database.py
+python update_database.py
 ```
 
-### 4. 查看数据库结构
-```bash
-python view_schema.py
-```
-
-### 5. 查看收集的数据
-```bash
-python view_data.py
-```
-
-### 6. 启动Web数据浏览器
+### 5. 启动Web数据浏览器
 ```bash
 cd webapp
 python app.py
@@ -109,7 +105,7 @@ python app.py
 
 ### 非农就业相关指标（18个）
 1. **非农就业总数** (PAYEMS)
-2. **分部门新增就业**（13个部门指标）:
+2. **分部门新增就业**（14个部门指标）:
    - 采矿业 (USMINE)
    - 建筑业 (USCONS)
    - 制造业 (MANEMP)
@@ -124,7 +120,7 @@ python app.py
    - 休闲和酒店业 (USLAH)
    - 其他服务业 (USSERV)
    - 政府 (USGOVT)
-3. **失业率指标**（5个U系列指标）:
+3. **失业率指标**（6个U系列指标）:
    - U-3 (UNRATE)
    - U-1 (U1RATE)
    - U-2 (U2RATE)
@@ -180,6 +176,7 @@ python app.py
 6. **数据表格**：以表格形式展示详细数据点
 7. **实时刷新**：支持手动刷新获取最新数据
 8. **数据摘要**：显示关键指标的最新值和趋势信息
+9. **单位显示**：所有指标都包含正确的单位信息，显示在图表标题和数据表格中
 
 ### 技术实现
 - **后端**：Python Flask框架
@@ -196,11 +193,21 @@ python app.py
 2. **批量处理脚本**：`process_all_indicators.py` 支持批量处理多个指标
 3. **错误处理**：实现了重试机制和错误处理
 
+## 数据完整性
+
+项目确保所有经济指标都包含正确的单位信息：
+- 分部门新增就业指标：单位为"Thousands of Persons, Seasonally Adjusted"
+- 失业率指标：单位为"Percent, Seasonally Adjusted"
+- CPI相关指标：包含适当的单位信息
+
 ## 开发计划
 1. ~~开发数据可视化功能，创建经济指标的趋势图表~~ (已完成)
 2. ~~实现定期自动数据收集功能~~ (已完成)
 3. ~~添加更多经济指标到收集列表~~ (已完成)
 4. ~~开发Web界面以更直观地展示数据~~ (已完成)
-5. 实现数据分析和预测功能
-6. 添加更多数据源
-7. 优化API调用效率
+5. ~~确保所有指标包含正确的单位信息~~ (已完成)
+6. 实现数据分析和预测功能
+7. 添加更多数据源
+8. 优化API调用效率
+9. 添加数据导出功能
+10. 实现多语言支持

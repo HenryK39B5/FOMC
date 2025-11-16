@@ -19,10 +19,10 @@ class IndicatorCategory(Base):
     
     # Self-referential relationship for hierarchy
     parent = relationship("IndicatorCategory", remote_side=[id])
-    children = relationship("IndicatorCategory")
+    children = relationship("IndicatorCategory", overlaps="parent")
     
     # One-to-many relationship with indicators
-    indicators = relationship("EconomicIndicator", back_populates="category")
+    indicators = relationship("EconomicIndicator", back_populates="category", overlaps="parent")
     
     def __repr__(self):
         return f"<IndicatorCategory(name='{self.name}', level={self.level})>"
@@ -43,6 +43,8 @@ class EconomicIndicator(Base):
     seasonal_adjustment = Column(String(50))
     last_updated = Column(DateTime)
     category_id = Column(Integer, ForeignKey('indicator_categories.id'), nullable=True)
+    sort_order = Column(Integer, default=0)  # 排序顺序
+    fred_url = Column(String(255))  # FRED数据平台的链接地址
     
     # Many-to-one relationship with category
     category = relationship("IndicatorCategory", back_populates="indicators")
