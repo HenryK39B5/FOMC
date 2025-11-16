@@ -49,28 +49,51 @@
             box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15);
         }
         
-        .indicator-card {
+        .indicator-category {
+            margin-bottom: 1rem;
+        }
+        
+        .category-header {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 0.75rem 1rem;
+            border-radius: 0.5rem;
             cursor: pointer;
-            transition: all 0.3s ease;
-            height: 100%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
         }
         
-        .indicator-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.2);
+        .category-header:hover {
+            background-color: #1a2530;
         }
         
-        .indicator-card .card-body {
-            padding: 1.25rem;
+        .indicator-list {
+            padding: 0.5rem;
+            max-height: 300px;
+            overflow-y: auto;
         }
         
-        .indicator-card h5 {
-            font-weight: 600;
-            color: var(--primary-color);
+        .indicator-item {
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            background-color: white;
+            border: 1px solid #ddd;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
         }
         
-        .indicator-card h6 {
-            font-weight: 500;
+        .indicator-item:hover {
+            background-color: #e9f7fe;
+            border-color: var(--secondary-color);
+            transform: translateX(5px);
+        }
+        
+        .indicator-item.active {
+            background-color: #d1ecf1;
+            border-color: #3498db;
         }
         
         .chart-container {
@@ -154,6 +177,11 @@
             .footer {
                 text-align: center;
             }
+            
+            /* 在小屏幕上改为垂直布局 */
+            .sidebar-col {
+                margin-bottom: 1.5rem;
+            }
         }
         
         @media (max-width: 576px) {
@@ -199,21 +227,30 @@
         }
         
         /* 滚动条样式 */
-        .data-table-container::-webkit-scrollbar {
+        .data-table-container::-webkit-scrollbar, .indicator-list::-webkit-scrollbar {
             width: 8px;
         }
         
-        .data-table-container::-webkit-scrollbar-track {
+        .data-table-container::-webkit-scrollbar-track, .indicator-list::-webkit-scrollbar-track {
             background: #f1f1f1;
         }
         
-        .data-table-container::-webkit-scrollbar-thumb {
+        .data-table-container::-webkit-scrollbar-thumb, .indicator-list::-webkit-scrollbar-thumb {
             background: #c1c1c1;
             border-radius: 4px;
         }
         
-        .data-table-container::-webkit-scrollbar-thumb:hover {
+        .data-table-container::-webkit-scrollbar-thumb:hover, .indicator-list::-webkit-scrollbar-thumb:hover {
             background: #a8a8a8;
+        }
+        
+        /* 折叠图标动画 */
+        .collapse-icon {
+            transition: transform 0.3s ease;
+        }
+        
+        .collapsed .collapse-icon {
+            transform: rotate(-90deg);
         }
     </style>
 </head>
@@ -236,79 +273,92 @@
     </header>
 
     <div class="container">
-        <!-- Filter Section -->
-        <div class="filter-section">
-            <div class="row">
-                <div class="col-md-4">
-                    <label for="indicatorSelect" class="form-label">选择经济指标</label>
-                    <select class="form-select" id="indicatorSelect">
-                        <option value="">全部指标</option>
-                        <!-- 动态填充指标选项 -->
-                    </select>
+        <div class="row">
+            <!-- 左侧指标选择区 -->
+            <div class="col-lg-3 sidebar-col">
+                <div class="card">
+                    <div class="card-header bg-primary text-white">
+                        <h5 class="mb-0"><i class="bi bi-list-ul"></i> 经济指标分类</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="indicatorHierarchy">
+                            <!-- 动态填充指标层级结构 -->
+                        </div>
+                    </div>
                 </div>
-                <div class="col-md-4">
-                    <label for="dateRange" class="form-label">时间范围</label>
-                    <select class="form-select" id="dateRange">
-                        <option value="1Y">最近1年</option>
-                        <option value="3Y" selected>最近3年</option>
-                        <option value="5Y">最近5年</option>
-                        <option value="10Y">最近10年</option>
-                        <option value="all">全部数据</option>
-                    </select>
-                </div>
-                <div class="col-md-4">
-                    <label for="sortOrder" class="form-label">排序方式</label>
-                    <select class="form-select" id="sortOrder">
-                        <option value="date_desc">按日期降序</option>
-                        <option value="date_asc">按日期升序</option>
-                        <option value="value_desc">按数值降序</option>
-                        <option value="value_asc">按数值升序</option>
-                    </select>
+                
+                <!-- 过滤器区域 -->
+                <div class="card mt-3">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0"><i class="bi bi-funnel"></i> 数据过滤器</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="dateRange" class="form-label">时间范围</label>
+                            <select class="form-select" id="dateRange">
+                                <option value="1Y">最近1年</option>
+                                <option value="3Y" selected>最近3年</option>
+                                <option value="5Y">最近5年</option>
+                                <option value="10Y">最近10年</option>
+                                <option value="all">全部数据</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="sortOrder" class="form-label">排序方式</label>
+                            <select class="form-select" id="sortOrder">
+                                <option value="date_desc">按日期降序</option>
+                                <option value="date_asc">按日期升序</option>
+                                <option value="value_desc">按数值降序</option>
+                                <option value="value_asc">按数值升序</option>
+                            </select>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+            
+            <!-- 右侧数据展示区 -->
+            <div class="col-lg-9">
+                <!-- 图表区域 -->
+                <div class="card">
+                    <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                        <div>
+                            <h5 class="mb-0"><i class="bi bi-graph-up"></i> 数据趋势图</h5>
+                            <small id="currentIndicator" class="text-white-50">请选择一个经济指标</small>
+                        </div>
+                        <div>
+                            <button class="btn btn-sm btn-light me-2" id="lineChartBtn">折线图</button>
+                            <button class="btn btn-sm btn-light" id="barChartBtn">柱状图</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="chart-container">
+                            <canvas id="dataChart"></canvas>
+                        </div>
+                    </div>
+                </div>
 
-        <!-- Summary Cards -->
-        <div class="row" id="summaryCards">
-            <!-- 动态填充指标卡片 -->
-        </div>
-
-        <!-- Chart Section -->
-        <div class="card">
-            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
-                <h5 class="mb-0"><i class="bi bi-graph-up"></i> 数据趋势图</h5>
-                <div>
-                    <button class="btn btn-sm btn-light me-2" id="lineChartBtn">折线图</button>
-                    <button class="btn btn-sm btn-light" id="barChartBtn">柱状图</button>
-                </div>
-            </div>
-            <div class="card-body">
-                <div class="chart-container">
-                    <canvas id="dataChart"></canvas>
-                </div>
-            </div>
-        </div>
-
-        <!-- Data Table -->
-        <div class="card">
-            <div class="card-header bg-success text-white">
-                <h5 class="mb-0"><i class="bi bi-table"></i> 数据表格</h5>
-            </div>
-            <div class="card-body">
-                <div class="data-table-container">
-                    <table class="table table-striped table-hover" id="dataTable">
-                        <thead class="table-dark">
-                            <tr>
-                                <th>指标名称</th>
-                                <th>日期</th>
-                                <th>数值</th>
-                                <th>单位</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <!-- 动态填充数据行 -->
-                        </tbody>
-                    </table>
+                <!-- 数据表格 -->
+                <div class="card">
+                    <div class="card-header bg-success text-white">
+                        <h5 class="mb-0"><i class="bi bi-table"></i> 数据表格</h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="data-table-container">
+                            <table class="table table-striped table-hover" id="dataTable">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>指标名称</th>
+                                        <th>日期</th>
+                                        <th>数值</th>
+                                        <th>单位</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <!-- 动态填充数据行 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -333,16 +383,15 @@
         // 全局变量
         let currentChart = null;
         let chartType = 'line'; // 默认图表类型
+        let activeIndicatorId = null; // 当前选中的指标ID
 
         // 页面加载完成后初始化
         document.addEventListener('DOMContentLoaded', function() {
             loadIndicators();
-            loadSummaryData();
             loadDataTable();
             initializeChart();
             
             // 绑定事件监听器
-            document.getElementById('indicatorSelect').addEventListener('change', updateVisualization);
             document.getElementById('dateRange').addEventListener('change', updateVisualization);
             document.getElementById('sortOrder').addEventListener('change', updateVisualization);
             document.getElementById('lineChartBtn').addEventListener('click', function() {
@@ -417,7 +466,7 @@
             }
         }
 
-        // 加载经济指标列表
+        // 加载经济指标列表的层级结构
         function loadIndicators() {
             fetch('/api/indicators')
                 .then(response => {
@@ -427,64 +476,54 @@
                     return response.json();
                 })
                 .then(data => {
-                    const select = document.getElementById('indicatorSelect');
-                    // 保存当前选中的值
-                    const currentValue = select.value;
-                    // 清空选项
-                    select.innerHTML = '<option value="">全部指标</option>';
-                    // 添加新选项
-                    data.forEach(indicator => {
-                        const option = document.createElement('option');
-                        option.value = indicator.id;
-                        option.textContent = indicator.name + ' (' + indicator.code + ')';
-                        select.appendChild(option);
-                    });
-                    // 恢复之前的选中值
-                    if (currentValue) {
-                        select.value = currentValue;
+                    const hierarchyContainer = document.getElementById('indicatorHierarchy');
+                    hierarchyContainer.innerHTML = '';
+                    
+                    // 递归函数，用于构建层级结构的HTML
+                    function buildHierarchyHTML(items, level = 0) {
+                        let html = '';
+                        items.forEach(item => {
+                            if (item.type === 'category') {
+                                const categoryId = `category-${item.id}`;
+                                const iconClass = level === 0 ? 'bi-folder-fill' : 'bi-folder2-open';
+                                const paddingStyle = level > 0 ? `style="padding-left: ${level * 15}px"` : '';
+                                
+                                html += `
+                                    <div class="indicator-category mb-2" ${paddingStyle}>
+                                        <div class="category-header" data-bs-toggle="collapse" data-bs-target="#${categoryId}">
+                                            <span><i class="bi ${iconClass} me-2"></i>${item.name}</span>
+                                            <i class="bi bi-chevron-down collapse-icon"></i>
+                                        </div>
+                                        <div class="collapse show indicator-list" id="${categoryId}">
+                                            ${item.children && item.children.length > 0 ? buildHierarchyHTML(item.children, level + 1) : ''}
+                                        </div>
+                                    </div>
+                                `;
+                            } else if (item.type === 'indicator') {
+                                const paddingStyle = `style="padding-left: ${(level + 1) * 15}px"`;
+                                html += `
+                                    <div class="indicator-item" data-id="${item.id}" ${paddingStyle}>
+                                        <div class="fw-bold">${item.name}</div>
+                                        <small class="text-muted">${item.code}</small>
+                                    </div>
+                                `;
+                            }
+                        });
+                        return html;
                     }
+                    
+                    // 构建并插入层级结构HTML
+                    hierarchyContainer.innerHTML = buildHierarchyHTML(data);
+                    
+                    // 为所有指标项添加点击事件
+                    document.querySelectorAll('.indicator-item').forEach(item => {
+                        item.addEventListener('click', () => selectIndicator(item.dataset.id));
+                    });
                 })
                 .catch(error => {
                     console.error('加载指标列表失败:', error);
-                    alert('加载指标列表失败: ' + error.message);
-                });
-        }
-
-        // 加载摘要数据
-        function loadSummaryData() {
-            showLoading('summaryCards');
-            fetch('/api/summary')
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('网络响应错误');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    const container = document.getElementById('summaryCards');
-                    container.innerHTML = '';
-                    data.forEach(indicator => {
-                        const card = document.createElement('div');
-                        card.className = 'col-md-4 mb-3';
-                        card.innerHTML = `
-                            <div class="card indicator-card h-100" onclick="selectIndicator(${indicator.id})">
-                                <div class="card-body">
-                                    <h5 class="card-title">${indicator.name}</h5>
-                                    <h6 class="card-subtitle mb-2 text-muted">${indicator.code}</h6>
-                                    <p class="card-text">
-                                        <strong>最新值:</strong> ${indicator.latest_value !== null ? indicator.latest_value : 'N/A'} ${indicator.units}<br>
-                                        <strong>最新日期:</strong> ${indicator.latest_date || 'N/A'}<br>
-                                        <strong>数据点数:</strong> ${indicator.data_point_count}
-                                    </p>
-                                </div>
-                            </div>
-                        `;
-                        container.appendChild(card);
-                    });
-                })
-                .catch(error => {
-                    console.error('加载摘要数据失败:', error);
-                    showError('summaryCards', error.message);
+                    const hierarchyContainer = document.getElementById('indicatorHierarchy');
+                    hierarchyContainer.innerHTML = `<div class="alert alert-danger">加载指标列表失败: ${error.message}</div>`;
                 });
         }
 
@@ -552,9 +591,14 @@
 
         // 更新可视化
         function updateVisualization() {
-            const indicatorId = document.getElementById('indicatorSelect').value;
+            const indicatorId = activeIndicatorId;
             const dateRange = document.getElementById('dateRange').value;
             const sortOrder = document.getElementById('sortOrder').value;
+            
+            // 如果没有选中任何指标，则不更新
+            if (!indicatorId) {
+                return;
+            }
             
             // 显示图表加载状态
             if (currentChart) {
@@ -709,7 +753,30 @@
 
         // 选择指标
         function selectIndicator(indicatorId) {
-            document.getElementById('indicatorSelect').value = indicatorId;
+            // 更新活动状态
+            activeIndicatorId = indicatorId;
+            
+            // 更新UI上的活动状态
+            document.querySelectorAll('.indicator-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            
+            const selectedItem = document.querySelector(`.indicator-item[data-id="${indicatorId}"]`);
+            if (selectedItem) {
+                selectedItem.classList.add('active');
+            }
+            
+            // 获取指标名称并显示在页面上
+            const indicatorName = selectedItem.querySelector('.fw-bold').textContent;
+            const indicatorCode = selectedItem.querySelector('.text-muted').textContent;
+            
+            // 更新当前选中的指标显示
+            const currentIndicatorElement = document.getElementById('currentIndicator');
+            if (currentIndicatorElement) {
+                currentIndicatorElement.textContent = `${indicatorName} (${indicatorCode})`;
+            }
+            
+            // 更新可视化
             updateVisualization();
         }
 
@@ -732,7 +799,6 @@
                     // 显示成功消息
                     showMessage(data.message, 'success');
                     loadIndicators();
-                    loadSummaryData();
                     loadDataTable();
                     updateVisualization();
                 })

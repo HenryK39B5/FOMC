@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database.connection import get_db, engine
-from database.models import EconomicIndicator, EconomicDataPoint
+from database.models import EconomicIndicator, EconomicDataPoint, IndicatorCategory
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, func
 
@@ -27,22 +27,49 @@ def index():
 
 @app.route('/api/indicators')
 def get_indicators():
-    """获取所有经济指标"""
+    """获取所有经济指标的层级结构"""
     try:
         db = get_db_session()
-        indicators = db.query(EconomicIndicator.id, EconomicIndicator.name, EconomicIndicator.code, EconomicIndicator.units).order_by(EconomicIndicator.id).all()
         
-        result = []
-        for indicator in indicators:
-            result.append({
-                'id': indicator[0],
-                'name': indicator[1],
-                'code': indicator[2],
-                'units': indicator[3]
-            })
+        # 获取所有顶级分类（板块）
+        top_categories = db.query(IndicatorCategory).filter(IndicatorCategory.parent_id.is_(None)).all()
+        
+        def build_category_hierarchy(category):
+            """递归构建分类层级结构"""
+            result = {
+                'id': category.id,
+                'name': category.name,
+                'level': category.level,
+                'type': 'category',
+                'children': []
+            }
+            
+            # 获取子分类
+            child_categories = db.query(IndicatorCategory).filter(IndicatorCategory.parent_id == category.id).all()
+            for child in child_categories:
+                result['children'].append(build_category_hierarchy(child))
+            
+            # 获取该分类下的指标
+            indicators = db.query(EconomicIndicator).filter(EconomicIndicator.category_id == category.id).all()
+            for indicator in indicators:
+                result['children'].append({
+                    'id': indicator.id,
+                    'name': indicator.name,
+                    'code': indicator.code,
+                    'english_name': indicator.english_name,
+                    'units': indicator.units,
+                    'type': 'indicator'
+                })
+            
+            return result
+        
+        # 构建完整的层级结构
+        hierarchy = []
+        for category in top_categories:
+            hierarchy.append(build_category_hierarchy(category))
         
         db.close()
-        return jsonify(result)
+        return jsonify(hierarchy)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
