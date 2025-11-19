@@ -1,0 +1,7 @@
+# Environment & secrets
+.env
+
+# Local databases / artifacts
+*.db
+__pycache__/
+*.pyc

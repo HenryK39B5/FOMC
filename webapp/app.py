@@ -1,18 +1,32 @@
+import base64
+import io
 import os
 import sys
-from flask import Flask, render_template, jsonify, request
+from calendar import monthrange
 from datetime import datetime, timedelta
 
+import matplotlib.pyplot as plt
+import pandas as pd
+from flask import Flask, render_template, jsonify, request
+from dotenv import load_dotenv
+
 # 将项目根目录添加到Python路径中
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(PROJECT_ROOT)
+
+# 加载环境变量，供FRED/DeepSeek等服务使用
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 # 使用项目根目录的数据库文件
-DATABASE_URL = "sqlite:///" + os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fomc_data.db")
+DATABASE_URL = "sqlite:///" + os.path.join(PROJECT_ROOT, "fomc_data.db")
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from database.models import EconomicIndicator, EconomicDataPoint, IndicatorCategory
 from sqlalchemy import func
+
+from data.charts.nonfarm_jobs_chart import LaborMarketChartBuilder
+from reports.report_generator import EconomicReportGenerator, IndicatorSummary, ReportFocus
 
 # 创建引擎和会话
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
@@ -20,9 +34,66 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 app = Flask(__name__, template_folder='templates')
 
+def get_labor_chart_builder():
+    """Singleton accessor so we reuse the same chart builder."""
+    if not hasattr(app, "_labor_chart_builder"):
+        app._labor_chart_builder = LaborMarketChartBuilder(database_url=DATABASE_URL)
+    return app._labor_chart_builder
+
+def build_economic_report():
+    """Lazy init the EconomicReportGenerator, only when API key is configured."""
+    if not hasattr(app, "_economic_report_generator"):
+        app._economic_report_generator = EconomicReportGenerator()
+    return app._economic_report_generator
+
 def get_db_session():
     """获取数据库会话"""
     return SessionLocal()
+
+def parse_report_month(month_text: str):
+    """Parse YYYY-MM string to the given month's last day."""
+    try:
+        base_date = datetime.strptime(month_text, "%Y-%m")
+    except (TypeError, ValueError):
+        return None
+    last_day = monthrange(base_date.year, base_date.month)[1]
+    return datetime(base_date.year, base_date.month, last_day)
+
+def figure_to_base64(fig):
+    """Convert matplotlib figure to base64 to send via API."""
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", dpi=200, bbox_inches="tight")
+    buffer.seek(0)
+    encoded = base64.b64encode(buffer.read()).decode("utf-8")
+    plt.close(fig)
+    return encoded
+
+def select_month_row(df: pd.DataFrame, period: pd.Period):
+    """Select dataframe row that matches a specific month period."""
+    if df.empty:
+        return None
+    mask = df["date"].dt.to_period("M") == period
+    matches = df.loc[mask]
+    if matches.empty:
+        return None
+    return matches.iloc[-1]
+
+def format_delta(current, reference, decimals: int = 1):
+    """Format signed delta values."""
+    if current is None or reference is None:
+        return None
+    delta = current - reference
+    return f"{delta:+.{decimals}f}"
+
+def serialize_series(df: pd.DataFrame, value_key: str):
+    """Serialize pandas dataframe to JSON-friendly structure."""
+    records = []
+    for _, row in df.iterrows():
+        records.append({
+            "date": row["date"].strftime("%Y-%m-%d"),
+            value_key: round(float(row[value_key]), 2)
+        })
+    return records
 
 @app.route('/')
 def index():
@@ -182,6 +253,164 @@ def get_data():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/labor-market/report', methods=['POST'])
+def generate_labor_market_report():
+    """生成'新增非农就业+失业率'图表以及DeepSeek研报"""
+    payload = request.get_json() or {}
+    report_month = payload.get('report_month')
+    parsed_month = parse_report_month(report_month)
+    if not parsed_month:
+        return jsonify({'error': '报告月份格式需为YYYY-MM'}), 400
+
+    target_period = pd.Period(parsed_month, freq='M')
+
+    try:
+        chart_builder = get_labor_chart_builder()
+        fig, chart_payload = chart_builder.build(as_of=parsed_month)
+        chart_image = figure_to_base64(fig)
+    except Exception as exc:
+        return jsonify({'error': f'生成图表失败: {exc}'}), 500
+
+    payems_row = select_month_row(chart_payload.payems_changes, target_period)
+    unemployment_row = select_month_row(chart_payload.unemployment_rate, target_period)
+    payems_value = float(payems_row['monthly_change_10k']) if payems_row is not None else None
+    unemp_value = float(unemployment_row['value']) if unemployment_row is not None else None
+
+    prev_period = target_period - 1
+    yoy_period = target_period - 12
+    prev_payems_row = select_month_row(chart_payload.payems_changes, prev_period)
+    prev_unemp_row = select_month_row(chart_payload.unemployment_rate, prev_period)
+    yoy_unemp_row = select_month_row(chart_payload.unemployment_rate, yoy_period)
+
+    payems_mom = format_delta(
+        payems_value,
+        float(prev_payems_row['monthly_change_10k']) if prev_payems_row is not None else None,
+        decimals=1
+    )
+    unemp_mom = format_delta(
+        unemp_value,
+        float(prev_unemp_row['value']) if prev_unemp_row is not None else None,
+        decimals=2
+    )
+    unemp_yoy = format_delta(
+        unemp_value,
+        float(yoy_unemp_row['value']) if yoy_unemp_row is not None else None,
+        decimals=2
+    )
+
+    headline_parts = []
+    if payems_value is not None:
+        headline_parts.append(f"非农就业增加{payems_value:.1f}万人")
+    if unemp_value is not None:
+        headline_parts.append(f"失业率{unemp_value:.1f}%")
+    headline_summary = "，".join(headline_parts) if headline_parts else f"{report_month}缺少足够数据"
+
+    # 构造LLM使用的数据摘要
+    indicator_summaries = []
+    ui_indicators = []
+    if payems_value is not None:
+        indicator_summaries.append(IndicatorSummary(
+            name="新增非农就业",
+            latest_value=f"{payems_value:.1f}",
+            units="万人",
+            mom_change=f"{payems_mom} 万人" if payems_mom else None,
+            context="PAYEMS月度增量（万人）"
+        ))
+        ui_indicators.append({
+            'name': '新增非农就业',
+            'latest_value': f"{payems_value:.1f}",
+            'units': '万人',
+            'mom_change': payems_mom,
+            'context': 'PAYEMS月度增量（万人）'
+        })
+
+    if unemp_value is not None:
+        indicator_summaries.append(IndicatorSummary(
+            name="失业率(U3)",
+            latest_value=f"{unemp_value:.1f}",
+            units="%",
+            mom_change=f"{unemp_mom} ppts" if unemp_mom else None,
+            yoy_change=f"{unemp_yoy} ppts" if unemp_yoy else None,
+            context="UNRATE，经季调"
+        ))
+        ui_indicators.append({
+            'name': '失业率(U3)',
+            'latest_value': f"{unemp_value:.1f}",
+            'units': '%',
+            'mom_change': unemp_mom,
+            'yoy_change': unemp_yoy,
+            'context': 'UNRATE，经季调'
+        })
+
+    avg_payems = chart_payload.payems_changes["monthly_change_10k"].mean()
+    avg_unemp = chart_payload.unemployment_rate["value"].mean()
+    chart_commentary = (
+        f"图表覆盖{chart_payload.start_date:%Y-%m}至{chart_payload.end_date:%Y-%m}。"
+        f"期间新增非农就业平均{avg_payems:.1f}万人，"
+        f"当前为{payems_value:.1f}万人；失业率平均{avg_unemp:.1f}%，"
+        f"当前为{unemp_value:.1f}%."
+    ) if payems_value is not None and unemp_value is not None else ""
+
+    fomc_points = []
+    if payems_value is not None and avg_payems is not None:
+        if payems_value >= avg_payems:
+            fomc_points.append("就业增速仍高于三年均值，FOMC需要警惕劳动力需求的粘性。")
+        else:
+            fomc_points.append("非农就业增速回落至近三年均值下方，就业市场降温有助于抑制薪资压力。")
+    if unemp_mom:
+        if unemp_mom.startswith("+"):
+            fomc_points.append("失业率小幅回升，劳动力闲置率的抬头或将缓解政策压力。")
+        else:
+            fomc_points.append("失业率继续走低，显示需求仍旧旺盛，可能延后宽松。")
+
+    risk_points = []
+    if payems_mom and payems_mom.startswith("-"):
+        risk_points.append("关注企业招聘冻结对未来数月就业的拖累。")
+    else:
+        risk_points.append("持续强劲的招聘可能让工资黏性更顽固。")
+
+    policy_focus = ReportFocus(
+        fomc_implications=fomc_points,
+        risks_to_watch=risk_points,
+        market_reaction=[]
+    )
+
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    report_text = None
+    llm_error = None
+    if deepseek_key:
+        try:
+            generator = build_economic_report()
+            report_text = generator.generate_nonfarm_report(
+                report_month=report_month,
+                headline_summary=headline_summary,
+                labor_market_metrics=indicator_summaries,
+                policy_focus=policy_focus,
+                chart_commentary=chart_commentary
+            )
+        except Exception as exc:
+            llm_error = f"生成研报失败: {exc}"
+    else:
+        llm_error = "未配置DEEPSEEK_API_KEY，无法调用研报生成。"
+
+    response = {
+        'report_month': report_month,
+        'headline_summary': headline_summary,
+        'chart_image': chart_image,
+        'chart_window': {
+            'start_date': chart_payload.start_date.strftime("%Y-%m-%d"),
+            'end_date': chart_payload.end_date.strftime("%Y-%m-%d")
+        },
+        'indicators': ui_indicators,
+        'chart_commentary': chart_commentary,
+        'payems_series': serialize_series(chart_payload.payems_changes, "monthly_change_10k"),
+        'unemployment_series': serialize_series(chart_payload.unemployment_rate, "value"),
+        'report_text': report_text,
+        'llm_error': llm_error
+    }
+    return jsonify(response)
 
 @app.route('/api/chart-data')
 def get_chart_data():

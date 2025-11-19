@@ -162,6 +162,36 @@
         .table-dark {
             background-color: var(--primary-color);
         }
+
+        .report-chart-placeholder {
+            min-height: 320px;
+            border: 1px dashed #ced4da;
+            border-radius: 0.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #6c757d;
+            padding: 1rem;
+            text-align: center;
+        }
+
+        .report-text-box {
+            min-height: 320px;
+            border: var(--card-border);
+            border-radius: 0.5rem;
+            padding: 1rem;
+            background-color: #fff;
+            overflow-y: auto;
+        }
+
+        .report-meta {
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+
+        #reportText {
+            white-space: pre-line;
+        }
         
         /* 响应式设计增强 */
         @media (max-width: 768px) {
@@ -372,6 +402,62 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- 研报生成区域 -->
+                <div class="card mt-4">
+                    <div class="card-header bg-dark text-white d-flex flex-column flex-md-row justify-content-between align-items-md-center">
+                        <div>
+                            <h5 class="mb-1"><i class="bi bi-journal-text"></i> 自动生成非农研报</h5>
+                            <small class="text-white-50">选择月份后，系统会绘制图表并调用DeepSeek生成分析文本</small>
+                        </div>
+                        <div class="mt-3 mt-md-0">
+                            <button class="btn btn-light" id="generateReportBtn">
+                                <i class="bi bi-play-circle"></i> 生成图表与研报
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3 align-items-end">
+                            <div class="col-sm-6 col-lg-4">
+                                <label for="reportType" class="form-label">报告类型</label>
+                                <select class="form-select" id="reportType" disabled>
+                                    <option value="nonfarm" selected>非农就业 + 失业率</option>
+                                </select>
+                            </div>
+                            <div class="col-sm-6 col-lg-4">
+                                <label for="reportMonth" class="form-label">报告月份</label>
+                                <input type="month" class="form-control" id="reportMonth">
+                            </div>
+                            <div class="col-lg-4 text-lg-end">
+                                <div id="reportStatus" class="report-meta">请选择月份后点击生成。</div>
+                            </div>
+                        </div>
+                        <div class="row mt-4">
+                            <div class="col-lg-6 mb-3 mb-lg-0">
+                                <div class="report-chart-placeholder" id="reportChartPlaceholder">
+                                    <img id="reportChartImage" class="img-fluid d-none" alt="劳动力市场图表">
+                                    <div id="reportChartEmpty">图表尚未生成</div>
+                                </div>
+                            </div>
+                            <div class="col-lg-6">
+                                <div class="report-text-box" id="reportTextBox">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <h6 class="mb-0">研报内容</h6>
+                                        <span class="badge bg-secondary" id="reportHeadlineBadge">待生成</span>
+                                    </div>
+                                    <div id="reportText" class="text-muted">生成研报后将在此展示全文。</div>
+                                    <div id="llmError" class="text-danger small mt-2 d-none"></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-4">
+                            <h6>关键指标摘要</h6>
+                            <ul class="list-group list-group-flush" id="indicatorSummary">
+                                <li class="list-group-item text-muted">暂无数据，请先生成一次研报。</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -402,6 +488,7 @@
             loadIndicators();
             loadDataTable();
             initializeChart();
+            initializeReportModule();
             
             // 绑定事件监听器
             document.getElementById('dateRange').addEventListener('change', updateVisualization);
@@ -836,6 +923,156 @@
                         refreshBtn.disabled = false;
                     }, 1000);
                 });
+        }
+
+        // -------------------------------
+        // 研报生成相关逻辑
+        // -------------------------------
+        function initializeReportModule() {
+            const monthInput = document.getElementById('reportMonth');
+            if (monthInput) {
+                const now = new Date();
+                const monthValue = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                monthInput.value = monthValue;
+            }
+            const generateBtn = document.getElementById('generateReportBtn');
+            if (generateBtn) {
+                generateBtn.addEventListener('click', handleReportGeneration);
+            }
+        }
+
+        function handleReportGeneration() {
+            const reportMonth = document.getElementById('reportMonth').value;
+            if (!reportMonth) {
+                showMessage('请先选择报告月份', 'warning');
+                return;
+            }
+            setReportLoading(true, '正在生成图表与研报...');
+            fetch('/api/labor-market/report', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ report_month: reportMonth })
+            })
+            .then(response => response.json().then(data => {
+                if (!response.ok) {
+                    throw new Error(data.error || '生成失败');
+                }
+                return data;
+            }))
+            .then(data => {
+                updateReportUI(data);
+            })
+            .catch(error => {
+                console.error('生成研报失败:', error);
+                showMessage('生成研报失败: ' + error.message, 'danger');
+                setReportLoading(false, '生成失败，请重试');
+            });
+        }
+
+        function setReportLoading(isLoading, statusText) {
+            const button = document.getElementById('generateReportBtn');
+            const status = document.getElementById('reportStatus');
+            if (button) {
+                if (isLoading) {
+                    button.disabled = true;
+                    button.innerHTML = '<span class="loading"></span> 处理中...';
+                } else {
+                    button.disabled = false;
+                    button.innerHTML = '<i class="bi bi-play-circle"></i> 生成图表与研报';
+                }
+            }
+            if (status && statusText) {
+                status.textContent = statusText;
+            } else if (status && !isLoading) {
+                status.textContent = '生成完成，可重新选择月份。';
+            }
+        }
+
+        function updateReportUI(data) {
+            const windowInfo = data.chart_window;
+            const windowText = windowInfo ? `图表区间: ${windowInfo.start_date} - ${windowInfo.end_date}` : '生成完成';
+            setReportLoading(false, windowText);
+            updateReportChart(data.chart_image);
+            updateIndicatorSummary(data.indicators);
+            updateReportText(data.report_text, data.llm_error, data.headline_summary);
+        }
+
+        function updateReportChart(imageBase64) {
+            const img = document.getElementById('reportChartImage');
+            const placeholder = document.getElementById('reportChartEmpty');
+            if (imageBase64 && img) {
+                img.src = `data:image/png;base64,${imageBase64}`;
+                img.classList.remove('d-none');
+                if (placeholder) {
+                    placeholder.classList.add('d-none');
+                }
+            } else {
+                if (img) {
+                    img.classList.add('d-none');
+                }
+                if (placeholder) {
+                    placeholder.classList.remove('d-none');
+                    placeholder.textContent = '无法生成图表';
+                }
+            }
+        }
+
+        function updateIndicatorSummary(indicators) {
+            const list = document.getElementById('indicatorSummary');
+            if (!list) return;
+            if (!indicators || indicators.length === 0) {
+                list.innerHTML = '<li class="list-group-item text-muted">暂无数据</li>';
+                return;
+            }
+            list.innerHTML = '';
+            indicators.forEach(item => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                const deltas = [];
+                if (item.mom_change) {
+                    deltas.push(`环比: ${item.mom_change}`);
+                }
+                if (item.yoy_change) {
+                    deltas.push(`同比: ${item.yoy_change}`);
+                }
+                const deltaText = deltas.length ? `（${deltas.join('，')}）` : '';
+                const contextText = item.context ? `<div class="small text-muted">${item.context}</div>` : '';
+                li.innerHTML = `<strong>${item.name}</strong>: ${item.latest_value}${item.units}${deltaText}${contextText}`;
+                list.appendChild(li);
+            });
+        }
+
+        function updateReportText(reportText, llmError, headline) {
+            const reportEl = document.getElementById('reportText');
+            const errorEl = document.getElementById('llmError');
+            const badgeEl = document.getElementById('reportHeadlineBadge');
+
+            if (badgeEl && headline) {
+                badgeEl.textContent = headline;
+                badgeEl.classList.remove('bg-secondary');
+                badgeEl.classList.add('bg-primary');
+            }
+
+            if (reportEl) {
+                if (reportText) {
+                    reportEl.textContent = reportText;
+                    reportEl.classList.remove('text-muted');
+                } else {
+                    reportEl.textContent = '未能生成研报内容，请检查DeepSeek配置。';
+                    reportEl.classList.add('text-muted');
+                }
+            }
+
+            if (errorEl) {
+                if (llmError) {
+                    errorEl.textContent = llmError;
+                    errorEl.classList.remove('d-none');
+                } else {
+                    errorEl.classList.add('d-none');
+                }
+            }
         }
     </script>
 </body>

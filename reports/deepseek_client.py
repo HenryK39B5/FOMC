@@ -1,0 +1,62 @@
+"""
+Lightweight DeepSeek API client built on top of the OpenAI SDK.
+
+DeepSeek exposes an OpenAI-compatible endpoint, so we simply override the base
+URL while reusing the familiar chat completion API.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+from openai import OpenAI
+
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+
+@dataclass
+class DeepSeekConfig:
+    """
+    Runtime parameters for interacting with the DeepSeek endpoint.
+    """
+
+    api_key: Optional[str] = None
+    base_url: str = DEEPSEEK_BASE_URL
+    model: str = "deepseek-chat"
+    temperature: float = 0.25
+    max_tokens: int = 1600
+    top_p: float = 0.95
+
+
+class DeepSeekClient:
+    """
+    Shared client responsible solely for LLM communication.
+    """
+
+    def __init__(self, config: Optional[DeepSeekConfig] = None):
+        self.config = config or DeepSeekConfig()
+        self.api_key = self.config.api_key or os.getenv("DEEPSEEK_API_KEY")
+        if not self.api_key:
+            raise RuntimeError(
+                "DeepSeek API key is missing. "
+                "Set the DEEPSEEK_API_KEY environment variable or pass api_key via DeepSeekConfig."
+            )
+        self._client = OpenAI(api_key=self.api_key, base_url=self.config.base_url)
+
+    def generate(self, messages: List[Dict[str, str]], **overrides) -> str:
+        """
+        Invoke the chat.completions endpoint and return the generated text payload.
+        """
+
+        params = {
+            "model": overrides.get("model", self.config.model),
+            "temperature": overrides.get("temperature", self.config.temperature),
+            "max_tokens": overrides.get("max_tokens", self.config.max_tokens),
+            "top_p": overrides.get("top_p", self.config.top_p),
+            "messages": messages,
+        }
+
+        response = self._client.chat.completions.create(**params)
+        return response.choices[0].message.content.strip()
