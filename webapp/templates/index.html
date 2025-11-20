@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>FOMC经济数据浏览器</title>
+    <title>FOMC宏观数据情报工作台</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -310,6 +310,26 @@
             display: block;
             color: #1e293b;
         }
+
+        .workspace-tabs .nav-link {
+            border-radius: 999px;
+            padding: 0.55rem 1.1rem;
+            font-weight: 600;
+        }
+
+        .workspace-tabs .nav-link.active {
+            background: #0d6efd;
+            color: #fff;
+            box-shadow: 0 0.5rem 1rem rgba(13, 110, 253, 0.15);
+        }
+
+        .report-tabs .nav-link {
+            font-weight: 600;
+        }
+
+        .report-tabs .badge {
+            font-size: 0.65rem;
+        }
         
         /* 响应式设计增强 */
         @media (max-width: 768px) {
@@ -420,8 +440,8 @@
         <div class="container">
             <div class="row align-items-center">
                 <div class="col-md-8">
-                    <h1><i class="bi bi-bar-chart-line"></i> FOMC经济数据浏览器</h1>
-                    <p class="mb-0">美联储公开市场委员会经济指标数据可视化平台</p>
+                    <h1><i class="bi bi-bar-chart-line"></i> FOMC宏观数据情报工作台</h1>
+                    <p class="mb-0">面向公开市场委员会的宏观指标监测与研判平台</p>
                 </div>
                 <div class="col-md-4 text-md-end">
                     <button class="btn btn-light" id="refreshBtn">
@@ -433,154 +453,215 @@
     </header>
 
     <div class="container">
-        <div class="row">
-            <!-- 左侧指标选择区 -->
-            <div class="col-lg-3 sidebar-col">
-                <div class="card">
-                    <div class="card-header bg-primary text-white">
-                        <h5 class="mb-0"><i class="bi bi-list-ul"></i> 经济指标分类</h5>
-                    </div>
-                    <div class="card-body">
-                        <div id="indicatorHierarchy">
-                            <!-- 动态填充指标层级结构 -->
-                        </div>
-                    </div>
+        <div class="card workspace-card mb-4">
+            <div class="card-body d-flex flex-column flex-lg-row align-items-lg-center justify-content-between">
+                <div>
+                    <div class="text-uppercase text-muted small fw-semibold mb-1">Workspace</div>
+                    <h5 class="mb-1">数据浏览与研报分区</h5>
+                    <p class="text-muted mb-0">从经济数据库浏览指标，或切换到研报工作台进行专题解读。</p>
                 </div>
-                
-                <!-- 过滤器区域 -->
-                <div class="card mt-3">
-                    <div class="card-header bg-success text-white">
-                        <h5 class="mb-0"><i class="bi bi-funnel"></i> 数据过滤器</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="mb-3">
-                            <label for="dateRange" class="form-label">时间范围</label>
-                            <select class="form-select" id="dateRange">
-                                <option value="1Y">最近1年</option>
-                                <option value="3Y" selected>最近3年</option>
-                                <option value="5Y">最近5年</option>
-                                <option value="10Y">最近10年</option>
-                                <option value="all">全部数据</option>
-                            </select>
+                <ul class="nav nav-pills workspace-tabs mt-3 mt-lg-0" id="workspaceTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="data-tab" data-bs-toggle="tab" data-bs-target="#dataWorkspace" type="button" role="tab" aria-controls="dataWorkspace" aria-selected="true">
+                            经济数据浏览
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="report-tab" data-bs-toggle="tab" data-bs-target="#reportWorkspace" type="button" role="tab" aria-controls="reportWorkspace" aria-selected="false">
+                            研报工作台
+                        </button>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <div class="tab-content" id="workspaceTabContent">
+            <div class="tab-pane fade show active" id="dataWorkspace" role="tabpanel" aria-labelledby="data-tab">
+                <div class="row">
+                    <!-- 左侧指标选择区 -->
+                    <div class="col-lg-3 sidebar-col">
+                        <div class="card">
+                            <div class="card-header bg-primary text-white">
+                                <h5 class="mb-0"><i class="bi bi-list-ul"></i> 经济指标分类</h5>
+                            </div>
+                            <div class="card-body">
+                                <div id="indicatorHierarchy">
+                                    <!-- 动态填充指标层级结构 -->
+                                </div>
+                            </div>
                         </div>
-                        <div class="mb-3">
-                            <label for="sortOrder" class="form-label">排序方式</label>
-                            <select class="form-select" id="sortOrder">
-                                <option value="date_desc">按日期降序</option>
-                                <option value="date_asc">按日期升序</option>
-                                <option value="value_desc">按数值降序</option>
-                                <option value="value_asc">按数值升序</option>
-                            </select>
+                        
+                        <!-- 过滤器区域 -->
+                        <div class="card mt-3">
+                            <div class="card-header bg-success text-white">
+                                <h5 class="mb-0"><i class="bi bi-funnel"></i> 数据过滤器</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="mb-3">
+                                    <label for="dateRange" class="form-label">时间范围</label>
+                                    <select class="form-select" id="dateRange">
+                                        <option value="1Y">最近1年</option>
+                                        <option value="3Y" selected>最近3年</option>
+                                        <option value="5Y">最近5年</option>
+                                        <option value="10Y">最近10年</option>
+                                        <option value="all">全部数据</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="sortOrder" class="form-label">排序方式</label>
+                                    <select class="form-select" id="sortOrder">
+                                        <option value="date_desc">按日期降序</option>
+                                        <option value="date_asc">按日期升序</option>
+                                        <option value="value_desc">按数值降序</option>
+                                        <option value="value_asc">按数值升序</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- 右侧数据展示区 -->
+                    <div class="col-lg-9">
+                        <!-- 图表区域 -->
+                        <div class="card">
+                            <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                                <div>
+                                    <h5 class="mb-0"><i class="bi bi-graph-up"></i> 数据趋势图</h5>
+                                    <small id="currentIndicator" class="text-white-50">请选择一个经济指标</small>
+                                </div>
+                                <div>
+                                    <button class="btn btn-sm btn-light me-2" id="lineChartBtn">折线图</button>
+                                    <button class="btn btn-sm btn-light" id="barChartBtn">柱状图</button>
+                                </div>
+                            </div>
+                            <div class="card-body">
+                                <div class="chart-container">
+                                    <canvas id="dataChart"></canvas>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 数据表格 -->
+                        <div class="card">
+                            <div class="card-header bg-success text-white">
+                                <h5 class="mb-0"><i class="bi bi-table"></i> 数据表格</h5>
+                            </div>
+                            <div class="card-body">
+                                <div class="data-table-container">
+                                    <table class="table table-striped table-hover" id="dataTable">
+                                        <thead class="table-dark">
+                                            <tr>
+                                                <th>指标名称</th>
+                                                <th>日期</th>
+                                                <th>数值</th>
+                                                <th>单位</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <!-- 动态填充数据行 -->
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-            
-            <!-- 右侧数据展示区 -->
-            <div class="col-lg-9">
-                <!-- 图表区域 -->
-                <div class="card">
-                    <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+
+            <div class="tab-pane fade" id="reportWorkspace" role="tabpanel" aria-labelledby="report-tab">
+                <div class="card mb-4">
+                    <div class="card-body d-flex flex-column flex-md-row justify-content-between align-items-md-center">
                         <div>
-                            <h5 class="mb-0"><i class="bi bi-graph-up"></i> 数据趋势图</h5>
-                            <small id="currentIndicator" class="text-white-50">请选择一个经济指标</small>
+                            <h5 class="mb-1"><i class="bi bi-journal-text"></i> 研报工作台</h5>
+                            <p class="text-muted mb-0">基于经济数据库，分专题生成劳动力市场与通胀的可视化研判。</p>
                         </div>
-                        <div>
-                            <button class="btn btn-sm btn-light me-2" id="lineChartBtn">折线图</button>
-                            <button class="btn btn-sm btn-light" id="barChartBtn">柱状图</button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container">
-                            <canvas id="dataChart"></canvas>
+                        <div class="mt-3 mt-md-0 text-muted small">
+                            数据与图表来源于本地数据库，文字由 DeepSeek LLM 生成
                         </div>
                     </div>
                 </div>
 
-                <!-- 数据表格 -->
-                <div class="card">
-                    <div class="card-header bg-success text-white">
-                        <h5 class="mb-0"><i class="bi bi-table"></i> 数据表格</h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="data-table-container">
-                            <table class="table table-striped table-hover" id="dataTable">
-                                <thead class="table-dark">
-                                    <tr>
-                                        <th>指标名称</th>
-                                        <th>日期</th>
-                                        <th>数值</th>
-                                        <th>单位</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <!-- 动态填充数据行 -->
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+                <ul class="nav nav-tabs report-tabs" id="reportTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="nonfarm-tab" data-bs-toggle="tab" data-bs-target="#nonfarmReport" type="button" role="tab" aria-controls="nonfarmReport" aria-selected="true">
+                            非农就业研判
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="cpi-tab" data-bs-toggle="tab" data-bs-target="#cpiReport" type="button" role="tab" aria-controls="cpiReport" aria-selected="false" disabled>
+                            通胀（CPI）研判 <span class="badge bg-secondary ms-1">预告</span>
+                        </button>
+                    </li>
+                </ul>
 
-                <!-- 研报生成区域 -->
-                <div class="card mt-4">
-                    <div class="card-header bg-dark text-white d-flex flex-column flex-md-row justify-content-between align-items-md-center">
-                        <div>
-                            <h5 class="mb-1"><i class="bi bi-journal-text"></i> 自动生成非农研报</h5>
-                            <small class="text-white-50">选择月份后，系统会绘制图表并调用DeepSeek生成分析文本</small>
-                        </div>
-                        <div class="mt-3 mt-md-0">
-                            <button class="btn btn-light" id="generateReportBtn">
-                                <i class="bi bi-play-circle"></i> 生成图表与研报
-                            </button>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3 align-items-end">
-                            <div class="col-sm-6 col-lg-4">
-                                <label for="reportType" class="form-label">报告类型</label>
-                                <select class="form-select" id="reportType" disabled>
-                                    <option value="nonfarm" selected>非农就业 + 失业率</option>
-                                    <option value="cpi" disabled>美国CPI（即将上线）</option>
-                                </select>
-                            </div>
-                            <div class="col-sm-6 col-lg-4">
-                                <label for="reportMonth" class="form-label">报告月份</label>
-                                <input type="month" class="form-control" id="reportMonth">
-                            </div>
-                            <div class="col-lg-4 text-lg-end">
-                                <div id="reportStatus" class="report-meta">请选择月份后点击生成。</div>
-                            </div>
-                        </div>
-                        <div class="mt-4 report-article" id="reportArticle">
-                            <div class="report-hero">
-                                <div class="d-flex align-items-center gap-2 flex-wrap">
-                                    <span class="report-type-badge">非农就业研报</span>
-                                    <span class="headline-chip" id="reportHeadlineBadge">待生成</span>
+                <div class="tab-content pt-3" id="reportTabContent">
+                    <div class="tab-pane fade show active" id="nonfarmReport" role="tabpanel" aria-labelledby="nonfarm-tab">
+                        <div class="row g-4">
+                            <div class="col-lg-4">
+                                <div class="card h-100">
+                                    <div class="card-header bg-dark text-white">
+                                        <h5 class="mb-1"><i class="bi bi-clipboard2-pulse"></i> 非农就业形势研判</h5>
+                                        <small class="text-white-50">选择月份后，系统会绘制图表并生成文字分析</small>
+                                    </div>
+                                    <div class="card-body">
+                                        <div class="mb-3">
+                                            <label for="reportMonth" class="form-label">报告月份</label>
+                                            <input type="month" class="form-control" id="reportMonth">
+                                        </div>
+                                        <div class="d-flex flex-column flex-md-row align-items-md-center gap-2">
+                                            <button class="btn btn-dark flex-grow-1" id="generateReportBtn">
+                                                <i class="bi bi-play-circle"></i> 生成图表与研报
+                                            </button>
+                                            <div id="reportStatus" class="report-meta flex-grow-1 text-md-end">请选择月份后点击生成。</div>
+                                        </div>
+                                        <div class="mt-3 small text-muted">
+                                            输出内容聚焦美联储关注的就业增速、失业率结构与劳动力参与率。
+                                        </div>
+                                    </div>
                                 </div>
-                                <div class="metric-chip" id="reportWindow">近期区间</div>
                             </div>
-                            <div class="report-body" id="reportText">
-                                <p class="text-muted">生成研报后，将呈现类似券商报告的图文混排体验。</p>
+                            <div class="col-lg-8">
+                                <div class="card h-100">
+                                    <div class="card-body">
+                                        <div class="report-article" id="reportArticle">
+                                            <div class="report-hero">
+                                                <div class="d-flex align-items-center gap-2 flex-wrap">
+                                                    <span class="report-type-badge">非农就业研判</span>
+                                                    <span class="headline-chip" id="reportHeadlineBadge">待生成</span>
+                                                </div>
+                                                <div class="metric-chip" id="reportWindow">近期区间</div>
+                                            </div>
+                                            <div class="report-body" id="reportText">
+                                                <p class="text-muted">生成研报后，将呈现图文并茂的结构化解读。</p>
+                                            </div>
+                                            <figure class="report-figure mt-3">
+                                                <div class="figure-title">图1：新增非农就业（万人）及失业率(%，右)</div>
+                                                <canvas id="reportChart1" height="320"></canvas>
+                                            </figure>
+                                            <figure class="report-figure">
+                                                <div class="figure-title">图2：美国各类型失业率(%)</div>
+                                                <canvas id="reportChart2" height="320"></canvas>
+                                            </figure>
+                                            <figure class="report-figure">
+                                                <div class="figure-title">图3：美国就业率与劳动参与率(%)</div>
+                                                <canvas id="reportChart3" height="320"></canvas>
+                                            </figure>
+                                            <div id="llmError" class="text-danger small mt-2 d-none"></div>
+                                        </div>
+                                        <div class="mt-4">
+                                            <h6>关键指标摘要</h6>
+                                            <div id="indicatorSummary" class="row g-2">
+                                                <div class="col-12 text-muted">暂无数据，请先生成一次研报。</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <figure class="report-figure mt-3">
-                                <div class="figure-title">图1：新增非农就业（万人）及失业率(%，右)</div>
-                                <canvas id="reportChart1" height="320"></canvas>
-                            </figure>
-                            <figure class="report-figure">
-                                <div class="figure-title">图2：美国各类型失业率(%)</div>
-                                <canvas id="reportChart2" height="320"></canvas>
-                            </figure>
-                            <figure class="report-figure">
-                                <div class="figure-title">图3：美国就业率与劳动参与率(%)</div>
-                                <canvas id="reportChart3" height="320"></canvas>
-                            </figure>
-                            <div id="llmError" class="text-danger small mt-2 d-none"></div>
                         </div>
-                        <div class="mt-4">
-                            <h6>关键指标摘要</h6>
-                            <div id="indicatorSummary" class="row g-2">
-                                <div class="col-12 text-muted">暂无数据，请先生成一次研报。</div>
-                            </div>
+                    </div>
+                    <div class="tab-pane fade" id="cpiReport" role="tabpanel" aria-labelledby="cpi-tab">
+                        <div class="alert alert-info border-0 shadow-sm">
+                            CPI 通胀专题研判即将上线，届时将支持按权重拆分和多维可视化。
                         </div>
                     </div>
                 </div>
@@ -593,7 +674,7 @@
         <div class="container">
             <div class="row">
                 <div class="col-md-6">
-                    <p class="mb-0">&copy; 2025 FOMC经济数据分析项目</p>
+                    <p class="mb-0">&copy; 2025 FOMC宏观数据情报工作台</p>
                 </div>
                 <div class="col-md-6 text-md-end">
                     <p class="mb-0">数据来源: Federal Reserve Economic Data (FRED)</p>

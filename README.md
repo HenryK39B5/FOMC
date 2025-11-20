@@ -1,7 +1,7 @@
-# FOMC经济数据分析项目
+# FOMC宏观数据情报工作台
 
 ## 项目概述
-本项目收集、存储和分析与FOMC决策相关的经济数据，并提供Web可视化与自动化研报生成功能（DeepSeek LLM）。
+本项目收集、存储和分析与FOMC决策相关的经济数据，提供可视化浏览与自动化研报工作台（DeepSeek LLM）。
 
 ## 项目结构（核心文件）
 ```
@@ -90,12 +90,12 @@ python process_all_indicators.py
 python process_all_indicators.py --start-date 2010-01-01 --full-refresh
 ```
 
-### 3. 启动Web数据浏览器
+### 3. 启动Web工作台
 ```bash
 cd webapp
 python app.py
 ```
-访问 http://localhost:5000 查看数据浏览器。
+访问 http://localhost:5000 查看指标浏览与研报工作台。
 
 ## 数据库结构
 
