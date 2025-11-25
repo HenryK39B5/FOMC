@@ -78,6 +78,12 @@ class IndicatorDataUpdater:
                 continue
             # Drop duplicate dates within the fetched slice to avoid accidental double inserts
             df = df.drop_duplicates(subset=["date"])
+            # FRED may return observations outside the requested range (e.g., month starts),
+            # so clamp to the intended interval before inserting to avoid unique violations.
+            df = df[
+                (df["date"] >= pd.Timestamp(range_start))
+                & (df["date"] <= pd.Timestamp(range_end))
+            ]
 
             new_points = self._build_data_points(
                 indicator.id,
