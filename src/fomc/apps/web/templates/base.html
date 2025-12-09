@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FOMC Portal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <div class="nav">
+      <div class="brand">
+        <div class="glyph">F</div>
+        <div>
+          <div>FOMC Portal</div>
+          <div class="pill">研报 + 宏观事件 · 一体工作台</div>
+        </div>
+      </div>
+      <div class="nav-links">
+        <a href="/">主页</a>
+        <a href="/reports">研报工作台</a>
+        <a href="/macro-events">宏观事件月报</a>
+        <span class="chip disabled">规则模型（待上线）</span>
+      </div>
+    </div>
+  </header>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

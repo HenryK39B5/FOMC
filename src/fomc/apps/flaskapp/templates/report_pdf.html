@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ theme.title or '经济研报' }} PDF 导出</title>
+    <style>
+        :root {
+            --brand-main: {{ theme.accent or '#2b63d9' }};
+            --brand-aux: {{ theme.accent_secondary or '#1f2c3d' }};
+            --text-primary: #1f2937;
+            --header-start: {{ theme.header_start or '#1f2c3d' }};
+            --header-end: {{ theme.header_end or '#243447' }};
+            --badge-primary: {{ theme.badge_primary or '#0d6efd' }};
+            --badge-subtle: {{ theme.badge_subtle or 'rgba(43,99,217,0.08)' }};
+            --body-bg: {{ theme.body_bg or '#f5f7fa' }};
+            --card-bg: {{ theme.card_bg or '#ffffff' }};
+            --shadow: {{ theme.shadow or '0 12px 35px rgba(0,0,0,0.08)' }};
+        }
+        body { font-family: 'Times New Roman', 'KaiTi', 'STKaiti', serif; background: var(--body-bg); margin: 0; padding: 16px; color: var(--text-primary); font-size: 13px; }
+        .shell { max-width: 900px; margin: 0 auto; background: var(--card-bg); border-radius: 10px; box-shadow: var(--shadow); padding: 18px 22px 24px; }
+        .header { background: linear-gradient(135deg, var(--header-start), var(--header-end)); color: #fff; border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+        .header h1 { margin: 0 0 6px 0; font-size: 24px; letter-spacing: 0.4px; }
+        .meta { opacity: 0.85; font-size: 12px; }
+        h2 { margin: 18px 0 10px; font-size: 18px; color: #0f172a; }
+        h3 { margin: 14px 0 8px; font-size: 16px; color: var(--brand-main); }
+        p { margin: 8px 0; line-height: 1.6; text-indent: 2em; }
+        ul, ol { margin: 8px 0 8px 18px; }
+        .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; font-weight: 600; font-size: 12px; }
+        .badge-primary { background: var(--badge-primary); color: #fff; }
+        .badge-muted { background: #e5e7eb; color: #111827; }
+        .chip { display: inline-block; padding: 6px 10px; border-radius: 8px; background: var(--badge-subtle); color: var(--header-start); margin-top: 4px; }
+        .card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px; background: var(--card-bg); margin-bottom: 14px; }
+        figure { margin: 12px auto 18px; padding: 10px; background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; width: 70%; }
+        figcaption { font-size: 13px; color: #475569; margin-bottom: 8px; }
+        img.chart { width: 100%; border-radius: 6px; background: #f8fafc; }
+        .pill-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+        .pill { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; background: #fff; }
+        .pill strong { display: block; color: #0f172a; }
+        .pill .meta { color: #6b7280; font-size: 12px; }
+        .inline-figure { margin: 10px auto 14px; width: 70%; }
+        .inline-figure img { width: 100%; border-radius: 6px; }
+        .pdf-table-block { margin: 12px 0 14px; }
+        .pdf-table-title { font-weight: 700; color: var(--brand-main); margin-bottom: 6px; }
+        .pdf-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+        .pdf-table th, .pdf-table td { border: 1px solid #e5e7eb; padding: 5px 6px; text-align: left; }
+        .pdf-table th { background: rgba(0,0,0,0.03); color: #0f172a; }
+        .pdf-table .label-cell { display: flex; align-items: center; gap: 6px; }
+        .pdf-table .label-cell .dot { width: 6px; height: 6px; border-radius: 50%; background: #cbd5e1; display: inline-block; }
+        .pdf-table .label-cell .bold { font-weight: 700; }
+        .pdf-table .value-cell { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 92px; }
+        .pdf-table .value-text { font-variant-numeric: tabular-nums; color: #0f172a; }
+        .pdf-table .mini-bar { width: 100%; max-width: 110px; height: 7px; background: #f1f5f9; border-radius: 8px; overflow: hidden; position: relative; flex-shrink: 0; }
+        .pdf-table .mini-fill { height: 100%; border-radius: 8px; }
+        .pdf-table .delta-pos { color: #b45309; }
+        .pdf-table .delta-neg { color: #2563eb; }
+        .pdf-table .muted { color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div class="shell">
+        <div class="header">
+            <h1>{{ theme.title or '经济研报' }}</h1>
+            <div class="meta">导出时间：{{ exported_at }} ｜ 报告月份：{{ export_month }}</div>
+        </div>
+
+        <div class="card">
+            <div class="badge badge-primary">Headline</div>
+            <div class="chip">{{ report.headline_summary or '研报摘要' }}</div>
+            {% if report.chart_window %}
+            <div class="meta" style="margin-top:6px;">图表区间：{{ report.chart_window.start_date }} - {{ report.chart_window.end_date }}</div>
+            {% endif %}
+        </div>
+
+        <div class="card">
+            <div class="badge badge-muted">正文 + 图表</div>
+            {% if report_html %}
+                <div style="margin-top:8px;">{{ report_html | safe }}</div>
+            {% else %}
+                <p class="meta">未提供研报正文。</p>
+            {% endif %}
+        </div>
+
+        {% if contrib_tables %}
+        <div class="card">
+            <div class="badge badge-muted">分项表</div>
+            {% for tbl in contrib_tables %}
+                <div class="pdf-table-block">
+                    {{ tbl | safe }}
+                </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

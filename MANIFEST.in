@@ -1,0 +1,4 @@
+recursive-include src/fomc/apps/web/templates *.html
+recursive-include src/fomc/apps/web/static *.css *.js *.png *.svg
+recursive-include src/fomc/apps/flaskapp/templates *.html
+

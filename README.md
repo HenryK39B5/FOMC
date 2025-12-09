@@ -2,25 +2,36 @@
 
 以“工具 + 教学 + 沉浸式流程”帮助用户理解美联储货币政策决策。愿景、交互骨架与路线图详见 `docs/PROJECT_COMPASS.md`。
 
-## 仓库结构
-- `docs/`：项目指南针与公共文档。
-- `packages/data/`：FED-TOOLS-DATA 模块（数据抓取/清洗、可视化、研报、PDF）。现阶段的可运行部分。
-- `packages/`（预留）：`models`、`agents`、`common` 等共享包。
-- `apps/`（预留）：`web`、`api` 等应用层。
-- `fomc_data.db`：默认 SQLite 数据库，供数据模块及未来应用共享。
+## 仓库结构（重构版）
+- `docs/`：项目指南针与开发蓝图。
+- `src/fomc/`：统一代码包  
+  - `config/`：路径与 .env 加载  
+  - `infra/`：数据库引擎  
+  - `data/`：指标抓取/图表、宏观事件流水线与数据库模型  
+  - `reports/`：LLM 研报生成（非农/CPI）  
+  - `apps/`：统一 Web 门户（FastAPI + 内嵌 Flask 报告服务）、CLI 脚本  
+- `data/`：运行期 SQLite 文件（`fomc_data.db`、`macro_events.db`）。
+- `references/`：旧版子项目代码，仅供参考，不参与运行。
 
-## 先行可用模块：packages/data
-- 主要功能：抓取/更新 FRED 数据、生成非农与 CPI 研报、Web 界面展示与 PDF 导出。
-- 快速使用（在仓库根目录执行）：  
-  ```bash
-  pip install -r packages/data/requirements.txt
-  python packages/data/init_database.py
-  python packages/data/process_all_indicators.py
-  cd packages/data/webapp && python app.py
-  ```
-- 详细说明见 `packages/data/README.md`。
+## 快速使用
+```bash
+# 1) 安装依赖（建议虚拟环境）
+pip install -r requirements.txt
+# 2) 以可编辑方式安装包，注册 src/fomc 为可导入模块
+pip install -e .
+# 3) 初始化/更新数据库（FRED API 需配置 FRED_API_KEY）
+python -m fomc.apps.cli.init_database
+python -m fomc.apps.cli.process_all_indicators --start-date 2010-01-01
+# 4) 启动统一门户（http://localhost:9000）
+uvicorn fomc.apps.web.main:app --app-dir src --reload --port 9000
+```
 
 ## 近期计划
-- 按指南针建立三模式骨架：体验（历史会议模拟）/ 学习（美联储 101）/ 工具（工具箱）。
-- 接入 FedWatch 与规则模型，串联数据 → 研报 → 模型 → 讨论 → 决议/复盘。
-- 拆分共享包与应用层（`packages/models`、`packages/agents`、`apps/web`、`apps/api`）。
+- 接入规则模型与会议流程，扩展门户的占位功能。
+- 将宏观事件、研报、规则结果统一串联为会议快照。
+
+## 运行与数据管理说明
+- 环境变量：在仓库根创建 `.env`，至少包含 `FRED_API_KEY`，可选 `DEEPSEEK_API_KEY`。  
+- 数据库：默认路径 `data/fomc_data.db`（指标/研报）和 `data/macro_events.db`（宏观事件），`fomc.config.paths` 统一管理。  
+- CLI：`python -m fomc.apps.cli.init_database` 创建表；`python -m fomc.apps.cli.process_all_indicators` 同步指标；宏观事件可通过 Web 入口触发刷新。  
+- Web：推荐 `uvicorn fomc.apps.web.main:app --app-dir src --reload --port 9000`；如不开 reloader 可去掉 `--reload`。
