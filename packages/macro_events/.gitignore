@@ -1,0 +1,56 @@
+# OS/filesystem
+.DS_Store
+Thumbs.db
+
+# Editors/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+.env
+.env.*
+.ipynb_checkpoints
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node/JS
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Logs
+logs/
+*.log
+
+# Build/output
+dist/
+build/
+
+# Data, caches, artifacts (keep out of git)
+data/
+datasets/
+outputs/
+artifacts/
+tmp/
+cache/
+*.db
+*.sqlite*
+*.parquet
+*.feather
+*.pkl
+*.csv
+*.tsv
+*.jsonl
+*.ndjson
