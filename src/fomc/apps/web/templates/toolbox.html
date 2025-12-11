@@ -140,37 +140,156 @@
       .map((item) => `${item.name}: ${item.latest_value}${item.units || ""}${item.mom_change ? "（环比" + item.mom_change + "）" : ""}`)
       .join(" · ");
 
-  const renderContribTable = (title, rows = []) => {
-    if (!rows.length) return "";
-    const header = `<div class="contrib-title">${title}</div>`;
-    const body = rows
-      .map((r) => {
-        const indent = (r.level || 0) * 12;
-        const delta = r.delta_contribution;
-        const deltaCls = delta > 0 ? "pos" : delta < 0 ? "neg" : "muted";
-        const val = (v) => (v === null || v === undefined ? "—" : Number(v).toFixed(2));
-        return `
-          <tr>
-            <td><div style="padding-left:${indent}px;"><span class="dot"></span>${r.label || "—"}</div></td>
-            <td>${val(r.weight)}</td>
-            <td>${val(r.current)}</td>
-            <td>${val(r.contribution)}</td>
-            <td>${val(r.previous)}</td>
-            <td>${val(r.previous_contribution)}</td>
-            <td class="${deltaCls}">${val(r.delta_contribution)}</td>
-          </tr>
-        `;
-      })
-      .join("");
-    return `
-      <div class="contrib-table-wrap">
-        ${header}
-        <table class="contrib-table">
-          <thead><tr><th>分项</th><th>权重(%)</th><th>本月(%)</th><th>拉动(ppts)</th><th>上月(%)</th><th>上月拉动</th><th>差异</th></tr></thead>
-          <tbody>${body}</tbody>
-        </table>
-      </div>
+  const contribCollapseState = { yoy: null, mom: null };
+
+  const renderContribTable = (title, rows = [], mode = "yoy") => {
+    const wrapper = document.createElement("div");
+    wrapper.className = "contrib-table-wrap";
+    const heading = document.createElement("div");
+    heading.className = "figure-title";
+    heading.textContent = title;
+    wrapper.appendChild(heading);
+
+    if (!rows.length) {
+      const placeholder = document.createElement("div");
+      placeholder.textContent = "暂无数据";
+      placeholder.style.color = themeColors.muted;
+      wrapper.appendChild(placeholder);
+      return wrapper;
+    }
+
+    const absMax = (arr, key) => {
+      const vals = (arr || [])
+        .map((r) => (r[key] === null || r[key] === undefined ? null : Number(r[key])))
+        .filter((v) => v !== null && !Number.isNaN(v));
+      if (!vals.length) return 0;
+      return Math.max(...vals.map((v) => Math.abs(v)));
+    };
+    const maxChange = absMax(rows, "current");
+    const maxContrib = absMax(rows, "contribution");
+    const maxDelta = absMax(rows, "delta_contribution");
+
+    const format = (val) => (val === null || val === undefined || Number.isNaN(Number(val)) ? "—" : Number(val).toFixed(2));
+    const bar = (val, max) => {
+      if (val === null || val === undefined || Number.isNaN(Number(val))) {
+        return `<span style="color:${themeColors.muted}">—</span>`;
+      }
+      const safeMax = max || 1;
+      const width = Math.min(100, Math.abs(Number(val)) / safeMax * 100);
+      const isPos = Number(val) >= 0;
+      const align = isPos ? "left:0;" : `left:${100 - width}%;`;
+      return `
+        <div style="display:flex; align-items:center; gap:10px; min-width:160px;">
+          <span>${format(val)}</span>
+          <div class="bar-track">
+            <div class="bar-fill ${isPos ? "" : "neg"}" style="width:${width}%; ${align}"></div>
+          </div>
+        </div>
+      `;
+    };
+    const heat = (val, max) => {
+      if (val === null || val === undefined || Number.isNaN(Number(val))) {
+        return `<span style="color:${themeColors.muted}">—</span>`;
+      }
+      const safeMax = max || 1;
+      const intensity = Math.min(1, Math.abs(Number(val)) / safeMax);
+      const color = Number(val) >= 0
+        ? `rgba(249, 115, 22, ${0.35 + 0.4 * intensity})`
+        : `rgba(14, 165, 233, ${0.35 + 0.4 * intensity})`;
+      return `
+        <span class="heat-chip">
+          <span class="heat-dot" style="background:${color};"></span>
+          <span>${format(val)}</span>
+        </span>
+      `;
+    };
+
+    const nodes = (rows || []).map((r) => ({ ...r, children: [] }));
+    const byLabel = new Map();
+    nodes.forEach((n) => byLabel.set(n.label, n));
+    const roots = [];
+    nodes.forEach((n) => {
+      const parent = n.parent_label && byLabel.get(n.parent_label);
+      if (parent) {
+        parent.children.push(n);
+      } else {
+        roots.push(n);
+      }
+    });
+
+    if (!contribCollapseState[mode]) {
+      const initial = new Set();
+      nodes.forEach((n) => {
+        if (n.children && n.children.length) {
+          initial.add(n.label);
+        }
+      });
+      contribCollapseState[mode] = initial;
+    }
+    const collapsed = contribCollapseState[mode];
+
+    const table = document.createElement("table");
+    table.className = "contrib-table";
+    table.innerHTML = `
+      <thead>
+        <tr>
+          <th>分项</th>
+          <th>权重(%)</th>
+          <th>本月(%)</th>
+          <th>拉动(ppts)</th>
+          <th>上月(%)</th>
+          <th>上月拉动</th>
+          <th>差异</th>
+        </tr>
+      </thead>
     `;
+    const tbody = document.createElement("tbody");
+
+    const renderNode = (node, ancestorCollapsed) => {
+      if (ancestorCollapsed) return;
+      const hasChildren = node.children && node.children.length > 0;
+      const isCollapsed = collapsed.has(node.label);
+      const indentPx = (node.level || 0) * 14;
+      const tr = document.createElement("tr");
+      if (node.is_major && node.level === 0) tr.classList.add("major-row");
+      tr.innerHTML = `
+        <td>
+          <div style="display:flex; align-items:center; gap:8px; padding-left:${indentPx}px;">
+            ${hasChildren ? `<button class="tree-toggle" data-label="${node.label}" data-mode="${mode}">${isCollapsed ? "▸" : "▾"}</button>` : '<span class="tree-leaf"></span>'}
+            <span class="${node.level === 0 ? "title" : ""}">${node.label || "—"}</span>
+          </div>
+        </td>
+        <td>${format(node.weight)}</td>
+        <td>${bar(node.current, maxChange)}</td>
+        <td>${bar(node.contribution, maxContrib)}</td>
+        <td>${bar(node.previous, maxChange)}</td>
+        <td>${bar(node.previous_contribution, maxContrib)}</td>
+        <td>${heat(node.delta_contribution, maxDelta)}</td>
+      `;
+      tbody.appendChild(tr);
+      if (!isCollapsed) {
+        (node.children || []).forEach((child) => renderNode(child, false));
+      }
+    };
+
+    roots.forEach((root) => renderNode(root, false));
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+
+    wrapper.querySelectorAll(".tree-toggle").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const label = btn.dataset.label;
+        const m = btn.dataset.mode;
+        const set = contribCollapseState[m] || new Set();
+        if (set.has(label)) set.delete(label);
+        else set.add(label);
+        contribCollapseState[m] = set;
+        const fresh = renderContribTable(title, rows, mode);
+        wrapper.replaceWith(fresh);
+      });
+    });
+
+    return wrapper;
   };
 
   async function callApi(url, statusEl, resultEl, onSuccess) {
@@ -201,6 +320,10 @@
     1: "图1：美国CPI、核心CPI当月同比(%)",
     2: "图2：CPI、核心CPI季调环比(%)",
   };
+  const cpiTableTitles = {
+    1: "表1：当月CPI同比拉动拆分",
+    2: "表2：当月季调CPI分项环比结构",
+  };
 
   // 非农
   document.getElementById("btn-labor").addEventListener("click", () => {
@@ -211,14 +334,16 @@
       const markdown = data.report_text || buildLaborFallbackText(data);
       const reportHtml = renderMarkdownLite(markdown);
       el.innerHTML = `
-        <div class="card wide-card">
-          <div class="title">结论｜${data.headline_summary || "缺少数据"}</div>
-          <div class="muted">窗口 ${data.chart_window?.start_date || ""} → ${data.chart_window?.end_date || ""}</div>
-          <div class="summary-card">
-            <div class="pill-inline">指标快照：${insight || "暂无数据"}</div>
-            <p class="muted">${data.chart_commentary || data.llm_error || ""}</p>
+        <div class="report-shell">
+          <div class="card wide-card report-card">
+            <div class="title">结论｜${data.headline_summary || "缺少数据"}</div>
+            <div class="muted">窗口 ${data.chart_window?.start_date || ""} → ${data.chart_window?.end_date || ""}</div>
+            <div class="summary-card">
+              <div class="pill-inline">指标快照：${insight || "暂无数据"}</div>
+              <p class="muted">${data.chart_commentary || data.llm_error || ""}</p>
+            </div>
+            <div class="report-body" id="labor-report-body">${reportHtml}</div>
           </div>
-          <div class="report-body" id="labor-report-body">${reportHtml}</div>
         </div>
       `;
       insertChartsIntoReport(
@@ -241,24 +366,25 @@
       const insight = summarizeIndicators(data.indicators || []);
       const markdown = data.report_text || buildCpiFallbackText(data);
       const reportHtml = renderMarkdownLite(markdown);
-      const tablesHtml = [
-        renderContribTable("表1：当月CPI同比拉动拆分", data.contributions_yoy || []),
-        renderContribTable("表2：当月季调CPI分项环比结构", data.contributions_mom || []),
-      ].join("");
+      contribCollapseState.yoy = null;
+      contribCollapseState.mom = null;
+      const tables = {
+        table1: renderContribTable(cpiTableTitles[1], data.contributions_yoy || [], "yoy"),
+        table2: renderContribTable(cpiTableTitles[2], data.contributions_mom || [], "mom"),
+      };
       el.innerHTML = `
-        <div class="card wide-card">
-          <div class="title">结论｜${data.headline_summary || "缺少数据"}</div>
-          <div class="pill-inline">指标快照：${insight || "暂无数据"}</div>
-          <div class="muted">${data.chart_commentary || data.llm_error || ""}</div>
-          <div class="report-body" id="cpi-report-body">${reportHtml}</div>
-          <div class="contrib-block">${tablesHtml}</div>
+        <div class="report-shell">
+          <div class="card wide-card report-card">
+            <div class="title">结论｜${data.headline_summary || "缺少数据"}</div>
+            <div class="pill-inline">指标快照：${insight || "暂无数据"}</div>
+            <div class="muted">${data.chart_commentary || data.llm_error || ""}</div>
+            <div class="report-body" id="cpi-report-body">${reportHtml}</div>
+          </div>
         </div>
       `;
-      insertChartsIntoReport(
-        document.getElementById("cpi-report-body"),
-        buildCpiCharts(data),
-        cpiTitles
-      );
+      const cpiContainer = document.getElementById("cpi-report-body");
+      insertChartsIntoReport(cpiContainer, buildCpiCharts(data), cpiTitles);
+      insertTablesIntoReport(cpiContainer, tables, cpiTableTitles);
     });
   });
   document.getElementById("btn-cpi-pdf").addEventListener("click", () => {
@@ -267,10 +393,6 @@
   });
 
   // 宏观事件
-  let macroMode = "events";
-  let macroCurrentMonth = document.getElementById("macro-month").value;
-  document.getElementById("tab-events").addEventListener("click", () => { macroMode = "events"; fetchMacro(false); });
-  document.getElementById("tab-summary").addEventListener("click", () => { macroMode = "summary"; fetchMacro(false); });
   document.getElementById("btn-macro-refresh").addEventListener("click", () => fetchMacro(true));
   document.getElementById("btn-macro-pdf").addEventListener("click", () => {
     window.open(`/api/macro-events/pdf?month=${macroCurrentMonth}`, "_blank");
@@ -278,16 +400,81 @@
   document.getElementById("btn-load-months").addEventListener("click", loadMonths);
   document.getElementById("month-order").addEventListener("change", loadMonths);
 
-  const renderSummary = (html) => {
+  const buildUrlTitleMap = (events = []) => {
+    const map = {};
+    (events || []).forEach((e) => {
+      const urls = e.source_urls || [];
+      const titles = e.sources || [];
+      urls.forEach((url, idx) => {
+        if (!url) return;
+        const title = titles[idx] || e.title || url;
+        map[url] = title;
+      });
+    });
+    return map;
+  };
+
+  const renderSummary = (html, urlTitleMap = {}) => {
     if (!html) return '<div class="muted">尚未生成月报摘要</div>';
     const wrap = document.createElement("div");
     wrap.className = "summary-card";
-    const replaced = (html || "").replace(/(https?:\/\/[^\s<]+)/g, (m) => `<a class="link-chip" href="${m}" target="_blank">${m}</a>`);
-    wrap.innerHTML = replaced;
+    wrap.innerHTML = html || "";
+    const urlRegex = /(https?:\/\/[^\s<]+)/g;
+    const shorten = (u) => {
+      try {
+        const url = new URL(u);
+        const path = url.pathname.length > 24 ? url.pathname.slice(0, 20) + "…" : url.pathname;
+        return `${url.hostname}${path}`;
+      } catch {
+        return u.length > 42 ? `${u.slice(0, 38)}…` : u;
+      }
+    };
+    const linkify = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const parts = (node.textContent || "").split(urlRegex);
+        if (parts.length <= 1) return;
+        const frag = document.createDocumentFragment();
+        parts.forEach((part, idx) => {
+          if (idx % 2 === 0) {
+            if (part) frag.appendChild(document.createTextNode(part));
+          } else {
+            const a = document.createElement("a");
+            a.href = part;
+            a.textContent = urlTitleMap[part] || shorten(part);
+            a.target = "_blank";
+            a.rel = "noopener noreferrer";
+            a.classList.add("link-chip");
+            frag.appendChild(a);
+          }
+        });
+        node.replaceWith(frag);
+        return;
+      }
+      if (node.nodeType === Node.ELEMENT_NODE && node.tagName === "A") return;
+      Array.from(node.childNodes).forEach((child) => linkify(child));
+    };
+    linkify(wrap);
     wrap.querySelectorAll("a").forEach((a) => {
+      const href = a.getAttribute("href") || a.href || "";
+      const title = urlTitleMap[href] || urlTitleMap[a.textContent] || null;
       a.classList.add("link-chip");
+      a.textContent = title || (a.textContent ? shorten(a.textContent) : shorten(href));
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
     });
     return wrap.outerHTML;
+  };
+
+  const macroTabs = {
+    events: document.getElementById("tab-events"),
+    summary: document.getElementById("tab-summary"),
+  };
+  const syncMacroTabs = (mode) => {
+    Object.entries(macroTabs).forEach(([key, btn]) => {
+      if (!btn) return;
+      const active = key === mode;
+      btn.classList.toggle("secondary", !active);
+    });
   };
 
   const renderEvents = (events = []) => {
@@ -325,6 +512,17 @@
     `;
   };
 
+  let macroMode = "events";
+  let macroCurrentMonth = document.getElementById("macro-month").value;
+  const setMacroMode = (mode, refresh = false) => {
+    macroMode = mode;
+    syncMacroTabs(mode);
+    fetchMacro(refresh);
+  };
+  if (macroTabs.events) macroTabs.events.addEventListener("click", () => setMacroMode("events", false));
+  if (macroTabs.summary) macroTabs.summary.addEventListener("click", () => setMacroMode("summary", false));
+  syncMacroTabs(macroMode);
+
   async function fetchMacro(refresh = false) {
     const month = macroCurrentMonth;
     const status = document.getElementById("macro-status");
@@ -337,7 +535,8 @@
       const data = await resp.json();
       if (!resp.ok) throw new Error(data.detail || data.error || "请求失败");
       status.textContent = "";
-      const summaryBlock = renderSummary(data.monthly_summary_html);
+      const urlTitleMap = buildUrlTitleMap(data.events);
+      const summaryBlock = renderSummary(data.monthly_summary_html, urlTitleMap);
       const eventsBlock = `<h3 class="section-title">事件时间线</h3><div class="grid">${renderEvents(data.events)}</div>`;
       const content = macroMode === "summary" ? summaryBlock : eventsBlock;
       result.innerHTML = `
@@ -529,6 +728,40 @@
     });
   }
 
+  function insertTablesIntoReport(container, tableMap, titleMap = {}) {
+    if (!container || !tableMap) return;
+    const used = new Set();
+    const anchors = Array.from(container.querySelectorAll("h2,h3,h4,h5,p"));
+    anchors.forEach((node) => {
+      const match = (node.textContent || "").match(/表\s*(\d+)/);
+      if (!match) return;
+      const idx = match[1];
+      const key = `table${idx}`;
+      const tableEl = tableMap[key];
+      if (!tableEl || used.has(key)) return;
+      const titleEl = tableEl.querySelector(".figure-title");
+      if (titleMap[idx] && titleEl) titleEl.textContent = titleMap[idx];
+      let anchor = node.nextElementSibling;
+      while (anchor && anchor.tagName === "BR") {
+        anchor = anchor.nextElementSibling;
+      }
+      if (anchor && !/^H[1-6]$/.test(anchor.tagName)) {
+        anchor.before(tableEl);
+      } else {
+        node.after(tableEl);
+      }
+      used.add(key);
+    });
+    Object.keys(tableMap || {}).forEach((key) => {
+      if (used.has(key)) return;
+      const idx = key.replace("table", "");
+      const tableEl = tableMap[key];
+      const titleEl = tableEl?.querySelector?.(".figure-title");
+      if (titleMap[idx] && titleEl) titleEl.textContent = titleMap[idx];
+      container.appendChild(tableEl);
+    });
+  }
+
   function buildLaborFallbackText(data) {
     const contrib = data.industry_contribution || {};
     const pos = (contrib.top_positive || []).map((x) => `${x.label} ${x.value ?? ""}%`).join("，");
@@ -554,6 +787,10 @@
       data.chart_commentary || "展示近期 CPI/核心CPI 同比走势。",
       "## 图2：CPI、核心CPI季调环比",
       "展示近期 CPI/核心CPI 环比变化。",
+      "## 表1：当月CPI同比拉动拆分",
+      "分项权重、本月同比与拉动对比上月的差异。",
+      "## 表2：当月季调CPI分项环比结构",
+      "展示本月季调环比、拉动贡献以及与上月的差异。",
     ].join("\n");
   }
 
@@ -691,13 +928,14 @@
     const canvas = document.createElement("canvas");
     canvas.height = 240;
     const ctx = canvas.getContext("2d");
+    const shared = { categoryPercentage: 0.6, barPercentage: 0.9, maxBarThickness: 34, borderRadius: 6 };
     new Chart(ctx, {
       type: "bar",
       data: {
         labels,
         datasets: [
-          { label: "上月", data: prevVals, backgroundColor: "rgba(148, 163, 184, 0.5)", stack: "rates" },
-          { label: "本月", data: currVals, backgroundColor: themeColors.accent, stack: "rates" },
+          { label: "上月", data: prevVals, backgroundColor: "rgba(148, 163, 184, 0.55)", borderColor: "rgba(148, 163, 184, 0.9)", ...shared },
+          { label: "本月", data: currVals, backgroundColor: themeColors.accent, borderColor: themeColors.accent, ...shared },
         ],
       },
       options: {

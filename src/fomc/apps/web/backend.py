@@ -63,6 +63,13 @@ def _handle_flask_response(resp):
         raise PortalError(f"Failed to parse response: {exc}")
 
 
+def _render_markdown(md_text: str | None) -> str | None:
+    """Render markdown with auto-linked URLs."""
+    if not md_text:
+        return None
+    return markdown2.markdown(md_text, extras=["autolink", "break-on-newline", "fenced-code-blocks"])
+
+
 def generate_labor_report(month: str) -> Dict[str, Any]:
     """Generate labor-market report payload via the existing Flask app."""
     return _call_flask_json("/api/labor-market/report", {"report_month": month})
@@ -100,7 +107,7 @@ def get_macro_month(month_key: str, refresh: bool = False) -> Dict[str, Any]:
         else:
             events = get_events_for_month(conn, month_key, "macro")
         summary_md = record["monthly_summary"] if record else None
-        summary_html = markdown2.markdown(summary_md) if summary_md else None
+        summary_html = _render_markdown(summary_md)
         events = [_shape_event(e) for e in events]
         try:
             events = sorted(events, key=lambda e: e.get("date") or "")
@@ -159,14 +166,61 @@ def export_macro_pdf(month_key: str, refresh: bool = False) -> tuple[bytes, Dict
     """
     data = get_macro_month(month_key, refresh=refresh)
     summary_html = data.get("monthly_summary_html") or "<p>无月报摘要</p>"
+    url_title_map: Dict[str, str] = {}
+    for evt in data.get("events") or []:
+        titles = evt.get("sources") or []
+        urls = evt.get("source_urls") or []
+        for idx, url in enumerate(urls):
+            if not url:
+                continue
+            title = titles[idx] if idx < len(titles) else None
+            url_title_map[url] = title or evt.get("title") or url
 
     def link_chips(html_str: str) -> str:
-        text_to_link = re.sub(
-            r"(https?://[^\s<]+)",
-            lambda m: f"<a class='link-chip' href='{html.escape(m.group(1))}' target='_blank'>{html.escape(m.group(1))}</a>",
-            html_str or "",
-        )
-        return re.sub(r"<a(?![^>]*\\bclass=)", "<a class='link-chip'", text_to_link, flags=re.IGNORECASE)
+        def autolink(text: str) -> str:
+            return re.sub(
+                r"(https?://[^\s<]+)",
+                lambda m: f"<a href=\"{html.escape(m.group(1))}\" target=\"_blank\" rel=\"noopener noreferrer\">{html.escape(m.group(1))}</a>",
+                text or "",
+            )
+
+        def patch_anchor(match: re.Match) -> str:
+            tag = match.group(0)
+            cls_match = re.search(r'class=["\']([^"\']*)["\']', tag, flags=re.IGNORECASE)
+            if cls_match:
+                classes = cls_match.group(1)
+                if "link-chip" not in classes.split():
+                    tag = tag.replace(cls_match.group(0), f'class="{classes} link-chip"')
+            else:
+                tag = tag.replace("<a", "<a class=\"link-chip\"", 1)
+            if "target=" not in tag:
+                tag = tag.replace("<a", "<a target=\"_blank\" rel=\"noopener noreferrer\"", 1)
+            elif "rel=" not in tag:
+                tag = tag.replace("target=", "rel=\"noopener noreferrer\" target=", 1)
+            return tag
+        def shorten(href: str) -> str:
+            try:
+                parsed = html.escape(href)
+                from urllib.parse import urlparse
+                parts = urlparse(href)
+                host = parts.hostname or href
+                path = (parts.path or "")[:24]
+                path = (path + "…") if parts.path and len(parts.path) > 24 else path
+                return f"{host}{path}"
+            except Exception:
+                safe = html.escape(href)
+                return safe if len(safe) <= 42 else safe[:38] + "…"
+
+        html_processed = autolink(html_str or "")
+
+        def normalize(match: re.Match) -> str:
+            raw = match.group(0)
+            href_match = re.search(r'href=["\']([^"\']+)["\']', raw, flags=re.IGNORECASE)
+            href = href_match.group(1) if href_match else ""
+            label = url_title_map.get(href) or shorten(href)
+            return f"<a class='link-chip' href='{html.escape(href)}' target='_blank' rel='noopener noreferrer'>{html.escape(label)}</a>"
+
+        return re.sub(r"<a\b[^>]*>.*?</a>", normalize, html_processed, flags=re.IGNORECASE | re.DOTALL)
 
     def source_chips(evt: Dict[str, Any]) -> str:
         titles = evt.get("sources") or []
@@ -206,6 +260,12 @@ def export_macro_pdf(month_key: str, refresh: bool = False) -> tuple[bytes, Dict
         margin: 18px;
         background: #f3f9f7;
         color: #0b1f1d;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      .page {
+        max-width: 760px;
+        margin: 0 auto;
       }
       .header {
         padding: 14px 16px;
@@ -287,18 +347,20 @@ def export_macro_pdf(month_key: str, refresh: bool = False) -> tuple[bytes, Dict
         {css}
       </head>
       <body>
-        <div class='header'>
-          <div class='pill'>宏观事件月报</div>
-          <h1>{data.get('month_key')}</h1>
-          <div>事件 {data.get('num_events') or len(data.get('events') or [])} 条</div>
-        </div>
-        <div class='card'>
-          <div class='section-title'>月报摘要</div>
-          <div class='summary-card'>{link_chips(summary_html)}</div>
-        </div>
-        <h2 class='section-title'>事件时间线</h2>
-        <div class='card'>
-          <div class='timeline'>{events_html or '<p class=\"muted\">暂无事件</p>'}</div>
+        <div class='page'>
+          <div class='header'>
+            <div class='pill'>宏观事件月报</div>
+            <h1>{data.get('month_key')}</h1>
+            <div>事件 {data.get('num_events') or len(data.get('events') or [])} 条</div>
+          </div>
+          <div class='card'>
+            <div class='section-title'>月报摘要</div>
+            <div class='summary-card'>{link_chips(summary_html)}</div>
+          </div>
+          <h2 class='section-title'>事件时间线</h2>
+          <div class='card'>
+            <div class='timeline'>{events_html or '<p class=\"muted\">暂无事件</p>'}</div>
+          </div>
         </div>
       </body>
     </html>
