@@ -5,7 +5,13 @@ and the macro-events pipeline so the portal can expose them behind one API.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from datetime import datetime
+import io
+import threading
+import time
+from typing import Any, Dict, List, Optional
+import uuid
 import html
 import re
 import base64
@@ -14,8 +20,13 @@ import markdown2
 
 from fomc.config import MACRO_EVENTS_DB_PATH, load_env
 from fomc.apps.flaskapp.app import app as reports_app  # type: ignore
+from fomc.config import MAIN_DB_PATH, REPO_ROOT
+from fomc.data.database.connection import SessionLocal
+from fomc.data.database.models import EconomicDataPoint, EconomicIndicator, IndicatorCategory
 from fomc.data.macro_events.db import get_connection, get_month_record, get_events_for_month
 from fomc.data.macro_events.month_service import ensure_month_events
+from fomc.data.indicators.indicator_sync_pipeline import IndicatorSyncPipeline
+from fomc.data.indicators.data_updater import IndicatorDataUpdater
 
 load_env()
 
@@ -436,3 +447,289 @@ def list_indicator_tree() -> Dict[str, Any]:
 def fetch_indicator_data(indicator_id: int, date_range: str = "3Y") -> Dict[str, Any]:
     """Fetch indicator time series for the data browser."""
     return _call_flask_get("/api/chart-data", {"indicator_id": indicator_id, "date_range": date_range})
+
+
+# --- Database management (jobs + health) ---
+
+
+@dataclass
+class DbJob:
+    id: str
+    kind: str
+    status: str = "queued"  # queued|running|success|error
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    logs: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+    result: Dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "kind": self.kind,
+            "status": self.status,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "error": self.error,
+            "result": self.result,
+            "logs": self.logs[-800:],
+        }
+
+
+_JOB_LOCK = threading.Lock()
+_JOBS: Dict[str, DbJob] = {}
+
+
+class _JobWriter(io.TextIOBase):
+    def __init__(self, job: DbJob):
+        self.job = job
+        self._buffer = ""
+
+    def write(self, s: str) -> int:  # type: ignore[override]
+        if not s:
+            return 0
+        self._buffer += s
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            with _JOB_LOCK:
+                self.job.logs.append(line.rstrip("\r"))
+        return len(s)
+
+    def flush(self) -> None:  # type: ignore[override]
+        if self._buffer:
+            with _JOB_LOCK:
+                self.job.logs.append(self._buffer.rstrip("\r"))
+            self._buffer = ""
+
+
+def _create_job(kind: str) -> DbJob:
+    job = DbJob(id=str(uuid.uuid4()), kind=kind)
+    with _JOB_LOCK:
+        _JOBS[job.id] = job
+    return job
+
+
+def get_db_job(job_id: str) -> Optional[Dict[str, Any]]:
+    with _JOB_LOCK:
+        job = _JOBS.get(job_id)
+        return job.as_dict() if job else None
+
+
+def _run_job(job: DbJob, fn, kwargs: Dict[str, Any]) -> None:
+    job.started_at = time.time()
+    job.status = "running"
+    writer = _JobWriter(job)
+
+    try:
+        fn(writer, **kwargs)
+        writer.flush()
+        job.status = "success"
+    except Exception as exc:
+        writer.flush()
+        job.status = "error"
+        job.error = str(exc)
+        with _JOB_LOCK:
+            job.logs.append(f"[error] {exc}")
+    finally:
+        job.finished_at = time.time()
+
+
+def start_sync_indicators_job(
+    *,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    requests_per_minute: int = 30,
+    default_start_date: str = "2010-01-01",
+    full_refresh: bool = False,
+) -> Dict[str, Any]:
+    job = _create_job("sync-indicators")
+
+    def _sync(writer: _JobWriter, **kwargs: Any) -> None:
+        excel_path = REPO_ROOT / "docs" / "US Economic Indicators with FRED Codes.xlsx"
+        writer.write(f"DB: {MAIN_DB_PATH}\n")
+        writer.write(f"Excel: {excel_path}\n")
+        session = SessionLocal()
+        try:
+            pipeline = IndicatorSyncPipeline(
+                session=session,
+                excel_path=str(excel_path),
+                requests_per_minute=int(kwargs["requests_per_minute"]),
+                default_start_date=str(kwargs["default_start_date"]),
+                start_date=kwargs.get("start_date"),
+                end_date=kwargs.get("end_date"),
+                full_refresh=bool(kwargs.get("full_refresh")),
+            )
+            # Capture pipeline prints into the job log.
+            old_stdout = __import__("sys").stdout
+            old_stderr = __import__("sys").stderr
+            try:
+                __import__("sys").stdout = writer  # type: ignore[assignment]
+                __import__("sys").stderr = writer  # type: ignore[assignment]
+                pipeline.run()
+            finally:
+                __import__("sys").stdout = old_stdout
+                __import__("sys").stderr = old_stderr
+        finally:
+            session.close()
+
+    thread = threading.Thread(
+        target=_run_job,
+        args=(job, _sync, {
+            "start_date": start_date,
+            "end_date": end_date,
+            "requests_per_minute": requests_per_minute,
+            "default_start_date": default_start_date,
+            "full_refresh": full_refresh,
+        }),
+        daemon=True,
+    )
+    thread.start()
+    return {"job_id": job.id}
+
+
+def start_refresh_indicator_job(
+    *,
+    indicator_id: int,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    requests_per_minute: int = 30,
+    default_start_date: str = "2010-01-01",
+    full_refresh: bool = False,
+) -> Dict[str, Any]:
+    job = _create_job("refresh-indicator")
+
+    def _refresh(writer: _JobWriter, **kwargs: Any) -> None:
+        session = SessionLocal()
+        try:
+            indicator = session.query(EconomicIndicator).filter(EconomicIndicator.id == int(kwargs["indicator_id"])).first()
+            if indicator is None:
+                raise PortalError(f"Indicator not found: {kwargs['indicator_id']}")
+            writer.write(f"Refreshing {indicator.name} ({indicator.code})\n")
+            updater = IndicatorDataUpdater(
+                session,
+                requests_per_minute=int(kwargs["requests_per_minute"]),
+                default_start_date=str(kwargs["default_start_date"]),
+            )
+            old_stdout = __import__("sys").stdout
+            old_stderr = __import__("sys").stderr
+            try:
+                __import__("sys").stdout = writer  # type: ignore[assignment]
+                __import__("sys").stderr = writer  # type: ignore[assignment]
+                inserted = updater.update_indicator_data(
+                    indicator,
+                    start_date=kwargs.get("start_date"),
+                    end_date=kwargs.get("end_date"),
+                    full_refresh=bool(kwargs.get("full_refresh")),
+                )
+            finally:
+                __import__("sys").stdout = old_stdout
+                __import__("sys").stderr = old_stderr
+
+            with _JOB_LOCK:
+                job.result = {"inserted": inserted, "indicator_id": indicator.id, "code": indicator.code}
+            writer.write(f"Done. Inserted {inserted} rows.\n")
+        finally:
+            session.close()
+
+    thread = threading.Thread(
+        target=_run_job,
+        args=(job, _refresh, {
+            "indicator_id": indicator_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "requests_per_minute": requests_per_minute,
+            "default_start_date": default_start_date,
+            "full_refresh": full_refresh,
+        }),
+        daemon=True,
+    )
+    thread.start()
+    return {"job_id": job.id}
+
+
+def get_indicator_health(indicator_id: int) -> Dict[str, Any]:
+    session = SessionLocal()
+    try:
+        indicator = (
+            session.query(EconomicIndicator)
+            .filter(EconomicIndicator.id == indicator_id)
+            .first()
+        )
+        if indicator is None:
+            raise PortalError("未找到指定的指标")
+
+        category_name = None
+        if indicator.category_id:
+            category = session.query(IndicatorCategory).filter(IndicatorCategory.id == indicator.category_id).first()
+            category_name = category.name if category else None
+
+        min_date = (
+            session.query(EconomicDataPoint.date)
+            .filter(EconomicDataPoint.indicator_id == indicator_id)
+            .order_by(EconomicDataPoint.date.asc())
+            .limit(1)
+            .scalar()
+        )
+        max_date = (
+            session.query(EconomicDataPoint.date)
+            .filter(EconomicDataPoint.indicator_id == indicator_id)
+            .order_by(EconomicDataPoint.date.desc())
+            .limit(1)
+            .scalar()
+        )
+        count = (
+            session.query(EconomicDataPoint.id)
+            .filter(EconomicDataPoint.indicator_id == indicator_id)
+            .count()
+        )
+
+        missing_months: List[str] = []
+        missing_month_count = 0
+        freq = (indicator.frequency or "").lower()
+
+        def month_key(dt: datetime) -> str:
+            return dt.strftime("%Y-%m")
+
+        if min_date and max_date and ("month" in freq or "monthly" in freq or freq == ""):
+            # Fast month coverage check: distinct YYYY-MM in SQL to avoid loading all daily rows.
+            from sqlalchemy import func
+
+            rows = (
+                session.query(func.strftime("%Y-%m", EconomicDataPoint.date))
+                .filter(EconomicDataPoint.indicator_id == indicator_id)
+                .distinct()
+                .all()
+            )
+            observed = {r[0] for r in rows if r and r[0]}
+            start = datetime(min_date.year, min_date.month, 1)
+            end = datetime(max_date.year, max_date.month, 1)
+            expected: List[str] = []
+            cursor = start
+            while cursor <= end:
+                expected.append(month_key(cursor))
+                year = cursor.year + (cursor.month // 12)
+                month = 1 if cursor.month == 12 else cursor.month + 1
+                cursor = datetime(year, month, 1)
+            missing = [m for m in expected if m not in observed]
+            missing_month_count = len(missing)
+            missing_months = missing[:24]
+
+        return {
+            "id": indicator.id,
+            "name": indicator.name,
+            "code": indicator.code,
+            "category": category_name,
+            "frequency": indicator.frequency,
+            "units": indicator.units,
+            "fred_url": indicator.fred_url,
+            "last_updated": indicator.last_updated.isoformat() if indicator.last_updated else None,
+            "min_date": min_date.isoformat() if min_date else None,
+            "max_date": max_date.isoformat() if max_date else None,
+            "count": count,
+            "missing_month_count": missing_month_count,
+            "missing_months": missing_months,
+        }
+    finally:
+        session.close()

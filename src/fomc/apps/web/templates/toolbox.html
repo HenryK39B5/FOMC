@@ -1,22 +1,16 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="hero-card" style="margin-bottom: 20px;">
-  <div class="pill">工具箱</div>
-  <h1>专注的三大工具</h1>
-  <p class="lede">为每个功能提供独立、沉浸的空间。上方标签切换工具，下方全宽阅读。</p>
-</div>
-
 <div class="panel">
   <div class="tabs">
-    <div class="tab active" data-pane="pane-labor">非农研报</div>
-    <div class="tab" data-pane="pane-cpi">CPI 研报</div>
-    <div class="tab" data-pane="pane-macro">宏观事件</div>
-    <div class="tab" data-pane="pane-data">经济数据浏览</div>
-    <div class="tab disabled" title="规则模型即将上线">规则模型（占位）</div>
+    <div class="tab active" data-pane="pane-macro">宏观事件</div>
+    <div class="tab" data-pane="pane-data">经济数据</div>
+    <div class="tab" data-pane="pane-labor">非农研报</div>
+    <div class="tab" data-pane="pane-cpi">CPI研报</div>
+    <div class="tab" data-pane="pane-models">政策规则</div>
   </div>
 
-  <div id="pane-labor" class="pane active">
+  <div id="pane-labor" class="pane" style="display:none;">
     <p class="muted">生成 PAYEMS/UNRATE 图表与研报，可预览与导出 PDF。</p>
     <div class="field-row">
       <input id="labor-month" type="month" value="{{ default_month }}">
@@ -38,7 +32,7 @@
     <div id="cpi-result" class="results fullwidth"></div>
   </div>
 
-  <div id="pane-macro" class="pane" style="display:none;">
+  <div id="pane-macro" class="pane active">
     <p class="muted">宏观事件月报：DDG 搜索 + LLM 聚合。左侧列出已有月份，可刷新或查看；右侧展示事件/摘要；支持 PDF 导出。</p>
     <div class="grid" style="grid-template-columns: 280px 1fr; gap: 12px; align-items: start;">
       <div class="card" style="max-height:520px; overflow:auto;">
@@ -71,8 +65,8 @@
   <div id="pane-data" class="pane" style="display:none;">
     <p class="muted">从指标树选择任意指标，查看时序图与数据表。后续将接入规则模型。</p>
     <div class="field-row" style="flex-wrap: wrap;">
-      <select id="indicator-select" style="min-width:260px; padding:10px; border-radius:12px; border:1px solid var(--card-border); background:rgba(255,255,255,0.05); color:var(--text);"></select>
-      <select id="date-range" style="min-width:140px; padding:10px; border-radius:12px; border:1px solid var(--card-border); background:rgba(255,255,255,0.05); color:var(--text);">
+      <select id="indicator-select" class="select"></select>
+      <select id="date-range" class="select select-small">
         <option value="1Y">近1年</option>
         <option value="3Y" selected>近3年</option>
         <option value="5Y">近5年</option>
@@ -80,9 +74,82 @@
         <option value="all">全部</option>
       </select>
       <button class="btn" id="btn-indicator">加载</button>
+      <button class="btn secondary" id="btn-health">健康</button>
     </div>
     <div id="indicator-status" class="muted"></div>
-    <div class="results fullwidth" id="indicator-result"></div>
+    <div class="grid" style="grid-template-columns: 1fr 360px; gap: 12px; align-items: start;">
+      <div class="results fullwidth" id="indicator-result"></div>
+      <div class="card" id="indicator-health-card" style="position: sticky; top: 92px;">
+        <div class="title">指标健康</div>
+        <div id="indicator-health" class="muted" style="font-size: 13px; line-height: 1.6;">选择指标后点击“健康”。</div>
+        <button class="btn secondary" id="btn-refresh-indicator" style="margin-top: 10px;">刷新当前指标</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top: 14px;">
+      <div class="title">数据库管理</div>
+      <div class="muted" style="font-size: 13px;">同步 Excel 定义并增量拉取缺失数据；支持单指标刷新与执行日志。</div>
+      <div class="field-row" style="flex-wrap: wrap; gap: 10px;">
+        <input id="db-start-date" class="input" placeholder="start YYYY-MM-DD" style="min-width: 160px;">
+        <input id="db-end-date" class="input" placeholder="end YYYY-MM-DD" style="min-width: 160px;">
+        <input id="db-rpm" class="input" type="number" min="1" max="300" value="30" style="width: 110px;" title="FRED 请求限速（requests/min），避免触发限流">
+        <label class="checkbox"><input id="db-full-refresh" type="checkbox"> full refresh</label>
+        <button class="btn" id="btn-sync">同步全部指标</button>
+      </div>
+      <div id="db-job-status" class="muted" style="margin-top: 8px;"></div>
+      <pre id="db-job-log" class="log-box" style="margin-top: 10px; max-height: 260px; overflow:auto;"></pre>
+    </div>
+  </div>
+
+  <div id="pane-models" class="pane" style="display:none;">
+    <div class="model-topbar">
+      <select id="taylor-model" class="select">
+        <option value="taylor" selected>标准泰勒规则</option>
+        <option value="extended">扩展泰勒规则</option>
+        <option value="rudebusch">Rudebusch</option>
+        <option value="mankiw">Mankiw</option>
+        <option value="evans">Evans</option>
+        <option value="stone">Stone</option>
+      </select>
+      <input id="taylor-start" class="input" type="date" title="起始日期">
+      <input id="taylor-end" class="input" type="date" title="截止日期">
+      <input id="taylor-rho" class="input" type="number" step="0.05" min="0" max="1" value="0.00" style="width: 110px;" title="ρ：政策惯性系数（0=不平滑，1=完全锚定上期）">
+      <span class="muted" style="font-size:12px; font-weight:700;">ρ 用于调节“政策惯性/平滑”：越大越贴近上期 EFFR。</span>
+      <button class="btn" id="btn-taylor">运行</button>
+      <span id="taylor-status" class="muted"></span>
+    </div>
+
+    <div class="grid model-grid">
+      <div class="card model-charts">
+        <div class="title">Taylor vs EFFR</div>
+        <div class="chart-stack">
+          <div class="chart-box">
+            <canvas id="taylor-chart"></canvas>
+          </div>
+          <div class="chart-box small">
+            <canvas id="spread-chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="card model-formulas">
+        <div class="metric-row">
+          <div class="metric">
+            <div class="muted">Taylor</div>
+            <div class="title" id="metric-taylor">—</div>
+          </div>
+          <div class="metric">
+            <div class="muted">EFFR</div>
+            <div class="title" id="metric-fed">—</div>
+          </div>
+          <div class="metric">
+            <div class="muted">利差</div>
+            <div class="title" id="metric-spread">—</div>
+          </div>
+        </div>
+        <div id="taylor-formula" class="bb-formula">运行模型后显示公式与参数。</div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -599,7 +666,7 @@
       const options = collectIndicatorOptions(data || []);
       const select = document.getElementById("indicator-select");
       select.innerHTML = options.map((opt) => {
-        const indent = "&nbsp;".repeat(opt.depth * 2);
+        const indent = "\u00A0".repeat(opt.depth * 2);
         if (opt.kind === "category") {
           const prefix = opt.depth ? "↳ " : "";
           return `<option value="" disabled class="opt-category">${indent}${prefix}${opt.label}</option>`;
@@ -616,6 +683,104 @@
     }
   }
   loadIndicatorTree();
+
+  async function fetchIndicatorHealth() {
+    const indicatorId = document.getElementById("indicator-select").value;
+    if (!indicatorId) return;
+    const box = document.getElementById("indicator-health");
+    box.textContent = "加载中…";
+    try {
+      const resp = await fetch(`/api/db/indicator-health?indicator_id=${indicatorId}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "请求失败");
+      const missing = data.missing_month_count
+        ? `缺月: ${data.missing_month_count}（示例：${(data.missing_months || []).slice(0, 6).join(", ")}）`
+        : "缺月: 0";
+      box.innerHTML = [
+        `<div><b>${data.name}</b> <span class="muted">(${data.code})</span></div>`,
+        `<div class="muted">分类：${data.category || "—"} · 频率：${data.frequency || "—"} · 单位：${data.units || "—"}</div>`,
+        `<div class="muted">数据点：${data.count} · 起始：${(data.min_date || "").slice(0,10) || "—"} · 最新：${(data.max_date || "").slice(0,10) || "—"}</div>`,
+        `<div class="muted">${missing}</div>`,
+      ].join("");
+    } catch (err) {
+      box.textContent = err.message || "加载失败";
+    }
+  }
+
+  function setLog(text) {
+    const el = document.getElementById("db-job-log");
+    el.textContent = text || "";
+    el.scrollTop = el.scrollHeight;
+  }
+
+  async function pollJob(jobId) {
+    const statusEl = document.getElementById("db-job-status");
+    let lastLen = 0;
+    for (let i = 0; i < 900; i++) { // ~15min
+      const resp = await fetch(`/api/db/jobs/${jobId}`);
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "任务查询失败");
+      statusEl.textContent = `任务 ${data.kind}：${data.status}`;
+      const logs = (data.logs || []).join("\n");
+      if (logs.length !== lastLen) {
+        setLog(logs);
+        lastLen = logs.length;
+      }
+      if (data.status === "success") return data;
+      if (data.status === "error") throw new Error(data.error || "任务失败");
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    throw new Error("任务超时（仍在后台运行）");
+  }
+
+  async function startJob(url, payload) {
+    const statusEl = document.getElementById("db-job-status");
+    statusEl.textContent = "任务已提交…";
+    setLog("");
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload || {}),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || "提交失败");
+    const jobId = data.job_id;
+    const final = await pollJob(jobId);
+    return final;
+  }
+
+  function readSyncParams() {
+    const start = document.getElementById("db-start-date").value?.trim() || null;
+    const end = document.getElementById("db-end-date").value?.trim() || null;
+    const rpm = Number(document.getElementById("db-rpm").value || 30);
+    const full = !!document.getElementById("db-full-refresh").checked;
+    return { start_date: start || null, end_date: end || null, requests_per_minute: rpm, full_refresh: full };
+  }
+
+  document.getElementById("btn-health").addEventListener("click", fetchIndicatorHealth);
+  document.getElementById("indicator-select").addEventListener("change", () => {
+    document.getElementById("indicator-health").textContent = "选择指标后点击“健康”。";
+  });
+
+  document.getElementById("btn-sync").addEventListener("click", async () => {
+    try {
+      await startJob("/api/db/jobs/sync-indicators", readSyncParams());
+      await loadIndicatorTree();
+    } catch (err) {
+      document.getElementById("db-job-status").textContent = err.message || "同步失败";
+    }
+  });
+
+  document.getElementById("btn-refresh-indicator").addEventListener("click", async () => {
+    const indicatorId = Number(document.getElementById("indicator-select").value || 0);
+    if (!indicatorId) return;
+    try {
+      await startJob("/api/db/jobs/refresh-indicator", { ...readSyncParams(), indicator_id: indicatorId });
+      await fetchIndicatorHealth();
+    } catch (err) {
+      document.getElementById("db-job-status").textContent = err.message || "刷新失败";
+    }
+  });
 
   function renderIndicatorChart(data) {
     const canvas = document.createElement('canvas');
@@ -1018,6 +1183,235 @@
       },
     });
     return canvas;
+  }
+
+  // --- 经济建模：泰勒规则 ---
+
+  let taylorChart = null;
+  let spreadChart = null;
+
+  function fmtPct(x) {
+    if (x === null || x === undefined || Number.isNaN(Number(x))) return "—";
+    return `${Number(x).toFixed(2)}%`;
+  }
+
+  function inferTaylorDefaultDates() {
+    const end = new Date();
+    const start = new Date(end);
+    start.setFullYear(end.getFullYear() - 10);
+    const toISO = (d) => d.toISOString().slice(0, 10);
+    const startEl = document.getElementById("taylor-start");
+    const endEl = document.getElementById("taylor-end");
+    if (startEl && !startEl.value) startEl.value = toISO(start);
+    if (endEl && !endEl.value) endEl.value = toISO(end);
+  }
+  inferTaylorDefaultDates();
+
+  function renderTaylorCharts(series) {
+    const labels = (series || []).map((p) => (p.date || "").slice(0, 10));
+    const fed = (series || []).map((p) => p.fed);
+    const taylor = (series || []).map((p) => p.taylor);
+    const adjusted = (series || []).map((p) => p.adjusted);
+    const spread = (series || []).map((p) => (p.fed ?? 0) - (p.taylor ?? 0));
+
+    const chartEl = document.getElementById("taylor-chart");
+    if (chartEl) {
+      const ctx1 = chartEl.getContext("2d");
+      if (taylorChart) taylorChart.destroy();
+      taylorChart = new Chart(ctx1, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "EFFR（月均）", data: fed, borderColor: "#22c55e", backgroundColor: "rgba(34,197,94,0.12)", tension: 0.18, pointRadius: 2 },
+            { label: "Taylor（原始）", data: taylor, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,0.10)", tension: 0.18, pointRadius: 2 },
+            { label: "Taylor（平滑）", data: adjusted, borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,0.10)", tension: 0.18, pointRadius: 2 },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          scales: {
+            x: { ticks: { maxTicksLimit: 8, color: themeColors.muted }, grid: { color: themeColors.grid } },
+            y: { ticks: { color: themeColors.muted }, grid: { color: themeColors.grid } },
+          },
+          plugins: {
+            legend: { labels: { color: themeColors.text } },
+            tooltip: { backgroundColor: "rgba(8,16,28,0.9)", titleColor: "#fff", bodyColor: "#fff" },
+          },
+        },
+      });
+    }
+
+    const spreadEl = document.getElementById("spread-chart");
+    if (spreadEl) {
+      const ctx2 = spreadEl.getContext("2d");
+      if (spreadChart) spreadChart.destroy();
+      spreadChart = new Chart(ctx2, {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [
+            { label: "Fed - Taylor", data: spread, backgroundColor: "rgba(148,163,184,0.28)", borderColor: "rgba(148,163,184,0.55)", borderWidth: 1 },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { maxTicksLimit: 10, color: themeColors.muted }, grid: { color: themeColors.grid } },
+            y: { ticks: { color: themeColors.muted }, grid: { color: themeColors.grid } },
+          },
+          plugins: { legend: { labels: { color: themeColors.text } } },
+        },
+      });
+    }
+  }
+
+  async function runTaylor() {
+    const status = document.getElementById("taylor-status");
+    if (!status) return;
+    status.textContent = "计算中…";
+    status.style.color = "";
+    try {
+      const payload = {
+        model: document.getElementById("taylor-model")?.value || "taylor",
+        start_date: document.getElementById("taylor-start")?.value || null,
+        end_date: document.getElementById("taylor-end")?.value || null,
+        rho: (() => {
+          const v = Number(document.getElementById("taylor-rho")?.value);
+          return Number.isFinite(v) ? v : null;
+        })(),
+      };
+      const resp = await fetch("/api/models/taylor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.detail || "请求失败");
+
+      const metrics = data.metrics || {};
+      const elTaylor = document.getElementById("metric-taylor");
+      const elFed = document.getElementById("metric-fed");
+      const elSpread = document.getElementById("metric-spread");
+      if (elTaylor) elTaylor.textContent = fmtPct(metrics.taylorLatest);
+      if (elFed) elFed.textContent = fmtPct(metrics.fedLatest);
+      if (elSpread) elSpread.textContent = fmtPct(metrics.spread);
+
+      renderTaylorCharts(data.series || []);
+      renderTaylorExplain(data.explain || null);
+      status.textContent = `已生成 ${(data.series || []).length} 期（月度）`;
+    } catch (err) {
+      status.textContent = err.message || "计算失败";
+      status.style.color = "#f87171";
+    }
+  }
+
+  const btnTaylor = document.getElementById("btn-taylor");
+  if (btnTaylor) btnTaylor.addEventListener("click", runTaylor);
+  const modelSelect = document.getElementById("taylor-model");
+  if (modelSelect) {
+    modelSelect.addEventListener("change", () => {
+      runTaylor();
+    });
+  }
+
+  function renderTaylorExplain(explain) {
+    const host = document.getElementById("taylor-formula");
+    if (!host) return;
+    if (!explain) {
+      host.textContent = "暂无解释数据。";
+      return;
+    }
+    const terms = (explain.rule && explain.rule.terms) ? explain.rule.terms : [];
+
+    const box = (key, label, meaning, value, _editable, _step = "0.05") => {
+      const v = (value === null || value === undefined || Number.isNaN(Number(value))) ? "" : Number(value).toFixed(2);
+      const bottom = `<div class="bb-val">${v === "" ? "—" : v}</div>`;
+      const safeTitle = String(meaning || "").replace(/"/g, "&quot;");
+      return `
+        <span class="bb-box">
+          <span class="bb-top" title="${safeTitle}">${meaning || ""}</span>
+          <span class="bb-mid">${label || ""}</span>
+          ${bottom}
+        </span>
+      `;
+    };
+
+    const byKey = Object.fromEntries(terms.map((t) => [t.key, t]));
+    const b = (k, step) => {
+      const t = byKey[k] || {};
+      return box(k, t.label || k, t.meaning || "", t.value, !!t.editable, step);
+    };
+    const op = (s) => `<span class="bb-op">${s}</span>`;
+
+    const ruleResult = Number(explain.rule?.result ?? NaN);
+    const smoothResult = Number(explain.smoothing?.result ?? NaN);
+
+    const line1 = [
+      `<span class="bb-lhs">`,
+      `<span class="bb-box readonly"><span class="bb-top">理论利率</span><span class="bb-mid">i</span><span class="bb-val">${Number.isFinite(ruleResult) ? ruleResult.toFixed(2) : "—"}</span></span>`,
+      op("="),
+      `</span>`,
+      b("real_rate", "0.10"),
+      op("+"),
+      b("inflation", "0.01"),
+      op("+"),
+      b("alpha", "0.05"),
+      op("×"),
+      op("("),
+      b("inflation_gap", "0.01"),
+      op(")"),
+      op("+"),
+      b("beta", "0.05"),
+      op("×"),
+      b("okun", "0.05"),
+      op("×"),
+      op("("),
+      b("unemployment_gap", "0.01"),
+      op(")"),
+      op("+"),
+      b("output_gap", "0.01"),
+      op("+"),
+      b("intercept", "0.10"),
+    ].join("");
+
+    const line2 = [
+      `<span class="bb-lhs">`,
+      `<span class="bb-box readonly"><span class="bb-top">平滑利率</span><span class="bb-mid">i_adj</span><span class="bb-val">${Number.isFinite(smoothResult) ? smoothResult.toFixed(2) : "—"}</span></span>`,
+      op("="),
+      `</span>`,
+      b("rho", "0.05"),
+      op("×"),
+      `<span class="bb-box readonly"><span class="bb-top">先前 EFFR</span><span class="bb-mid">i_prev</span><span class="bb-val">${Number(explain.smoothing?.prev_fed ?? 0).toFixed(2)}</span></span>`,
+      op("+"),
+      op("("),
+      `<span class="bb-box readonly"><span class="bb-top">1-ρ</span><span class="bb-mid">1-ρ</span><span class="bb-val">${(1 - Number(explain.smoothing?.rho ?? 0)).toFixed(2)}</span></span>`,
+      op(")"),
+      op("×"),
+      `<span class="bb-box readonly"><span class="bb-top">Taylor</span><span class="bb-mid">i</span><span class="bb-val">${Number(explain.rule?.result ?? 0).toFixed(2)}</span></span>`,
+    ].join("");
+
+    const ruleSymbolic = explain.rule?.symbolic || "";
+    const smoothSymbolic = explain.smoothing?.symbolic || "";
+
+    host.innerHTML = `
+      <div class="bb-head">
+        <div class="muted">As of ${explain.as_of || "—"} · ${explain.model || ""} · ${explain.inflation_transform || "raw"}</div>
+      </div>
+      <div class="bb-block">
+        <div class="bb-title">政策规则</div>
+        <div class="bb-line one-line">${line1}</div>
+        <div class="bb-mini muted">${ruleSymbolic}</div>
+      </div>
+      <div class="bb-block">
+        <div class="bb-title">政策惯性</div>
+        <div class="bb-line one-line">${line2}</div>
+        <div class="bb-mini muted">${smoothSymbolic}</div>
+      </div>
+    `;
   }
 </script>
 {% endblock %}

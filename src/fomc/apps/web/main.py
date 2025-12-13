@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
 
 from fomc.config import load_env
 from .backend import (
@@ -20,8 +21,15 @@ from .backend import (
     fetch_indicator_data,
     generate_cpi_report,
     generate_labor_report,
+    get_db_job,
+    get_indicator_health,
     list_indicator_tree,
+    start_refresh_indicator_job,
+    start_sync_indicators_job,
 )
+from fomc.data.database.connection import SessionLocal
+from fomc.data.modeling.taylor_service import build_taylor_series_from_db
+from fomc.rules.taylor_rule import ModelType
 
 load_env()
 
@@ -171,6 +179,115 @@ def api_indicator_data(
         return fetch_indicator_data(indicator_id, date_range=date_range)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+class SyncIndicatorsPayload(BaseModel):
+    start_date: str | None = Field(default=None, description="YYYY-MM-DD")
+    end_date: str | None = Field(default=None, description="YYYY-MM-DD")
+    requests_per_minute: int = 30
+    default_start_date: str = "2010-01-01"
+    full_refresh: bool = False
+
+
+class RefreshIndicatorPayload(BaseModel):
+    indicator_id: int
+    start_date: str | None = Field(default=None, description="YYYY-MM-DD")
+    end_date: str | None = Field(default=None, description="YYYY-MM-DD")
+    requests_per_minute: int = 30
+    default_start_date: str = "2010-01-01"
+    full_refresh: bool = False
+
+
+@app.post("/api/db/jobs/sync-indicators")
+def api_db_sync(payload: SyncIndicatorsPayload):
+    try:
+        return start_sync_indicators_job(
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            requests_per_minute=payload.requests_per_minute,
+            default_start_date=payload.default_start_date,
+            full_refresh=payload.full_refresh,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/db/jobs/refresh-indicator")
+def api_db_refresh(payload: RefreshIndicatorPayload):
+    try:
+        return start_refresh_indicator_job(
+            indicator_id=payload.indicator_id,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            requests_per_minute=payload.requests_per_minute,
+            default_start_date=payload.default_start_date,
+            full_refresh=payload.full_refresh,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/db/jobs/{job_id}")
+def api_db_job(job_id: str):
+    job = get_db_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.get("/api/db/indicator-health")
+def api_db_indicator_health(indicator_id: int = Query(..., ge=1)):
+    try:
+        return get_indicator_health(indicator_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+class TaylorModelPayload(BaseModel):
+    model: ModelType = ModelType.TAYLOR
+    start_date: str | None = Field(default=None, description="YYYY-MM-DD")
+    end_date: str | None = Field(default=None, description="YYYY-MM-DD")
+    real_rate: float | None = None
+    target_inflation: float | None = None
+    alpha: float | None = None
+    beta: float | None = None
+    okun: float | None = None
+    intercept: float | None = None
+    rho: float | None = None
+
+    inflation_code: str = "PCEPILFE"
+    unemployment_code: str = "UNRATE"
+    nairu_code: str = "NROU"
+    fed_effective_code: str = "EFFR"
+
+
+@app.post("/api/models/taylor")
+def api_models_taylor(payload: TaylorModelPayload):
+    session = SessionLocal()
+    try:
+        return build_taylor_series_from_db(
+            session=session,
+            model=payload.model,
+            start_date=payload.start_date,
+            end_date=payload.end_date,
+            real_rate=payload.real_rate,
+            target_inflation=payload.target_inflation,
+            alpha=payload.alpha,
+            beta=payload.beta,
+            okun=payload.okun,
+            intercept=payload.intercept,
+            rho=payload.rho,
+            inflation_code=payload.inflation_code,
+            unemployment_code=payload.unemployment_code,
+            nairu_code=payload.nairu_code,
+            fed_effective_code=payload.fed_effective_code,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":

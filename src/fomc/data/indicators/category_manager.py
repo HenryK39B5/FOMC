@@ -42,6 +42,10 @@ CATEGORY_STRUCTURE: List[CategoryNode] = [
             )
         ],
     ),
+    CategoryNode(
+        name="政策利率",
+        sort_order=3,
+    ),
 ]
 
 INDICATOR_ORDER: Dict[str, List[str]] = {
@@ -93,6 +97,11 @@ INDICATOR_ORDER: Dict[str, List[str]] = {
         "家庭运营",
         "医疗服务",
         "运输服务",
+    ],
+    "政策利率": [
+        "有效联邦基金利率",
+        "联邦基金目标区间下限",
+        "联邦基金目标区间上限",
     ],
 }
 
