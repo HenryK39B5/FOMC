@@ -37,7 +37,10 @@ def fetch_articles(urls: Iterable[str], timeout: int = 8) -> Dict[str, str]:
 def decide_urls_for_fetch(news_items: List[NewsItem], max_urls: int = 12, model: str | None = None) -> List[str]:
     if not news_items:
         return []
-    idxs = classify_links_importance([item.__dict__ for item in news_items], max_primary=max_urls, model=model)
+    try:
+        idxs = classify_links_importance([item.__dict__ for item in news_items], max_primary=max_urls, model=model)
+    except Exception:
+        idxs = []
     if not idxs:
         return [item.url for item in news_items[:max_urls]]
     return [news_items[i].url for i in idxs if 0 <= i < len(news_items)]

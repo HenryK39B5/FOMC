@@ -117,7 +117,8 @@ class IndicatorSyncPipeline:
 
         df = df.replace("", pd.NA)
         df["板块"] = df["板块"].ffill()
-        df["FRED 代码"] = df["FRED 代码"].ffill()
+        # Do NOT forward-fill FRED codes: empty cells are meaningful and represent
+        # category marker rows (e.g., "分项CPI") in the Excel definition.
         df = df.dropna(subset=["板块", "经济指标"], how="all")
 
         print(f"Total rows after processing: {len(df)}")
@@ -126,8 +127,15 @@ class IndicatorSyncPipeline:
         return df
 
     def _clean_code(self, code: object) -> str:
+        if code is None or pd.isna(code):
+            return ""
         fred_code = str(code).strip()
-        return fred_code.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+        return (
+            fred_code.replace("\u200b", "")
+            .replace("\u200c", "")
+            .replace("\u200d", "")
+            .replace("\ufeff", "")
+        )
 
     def _is_duplicate_code(self, df: pd.DataFrame, index: int, fred_code: str) -> bool:
         if index == 0:

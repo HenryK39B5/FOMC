@@ -78,7 +78,9 @@ def ensure_month_events(
         if record and record["status"] == "completed" and not force_refresh:
             payload_events = _load_events_payload(record["events_payload"])
             events_from_db = payload_events or get_events_for_month(conn, month_key, report_type)
-            events_from_db = enrich_events_with_llm(events_from_db, report_type, use_llm=True, model=llm_model)
+            # Avoid re-calling LLM on cached months unless explicitly requested and summaries are missing.
+            if use_llm and any(not (e.get("summary_zh") or e.get("summary_en")) for e in events_from_db):
+                events_from_db = enrich_events_with_llm(events_from_db, report_type, use_llm=True, model=llm_model)
             return events_from_db
 
         month_id = upsert_month_record(
@@ -126,7 +128,7 @@ def ensure_month_events(
         candidates = filter_and_classify_news(all_news, report_type, start_date=start_date, end_date=end_date)
         clustered = cluster_candidates(candidates)
         selected_events = select_top_events(clustered, max_events=max_events)
-        selected_events = enrich_events_with_llm(selected_events, report_type, use_llm=True, model=llm_model)
+        selected_events = enrich_events_with_llm(selected_events, report_type, use_llm=use_llm, model=llm_model)
         if len(selected_events) > max_events:
             selected_events = selected_events[:max_events]
 
@@ -136,7 +138,7 @@ def ensure_month_events(
             insert_events(conn, month_id, month_key, report_type, selected_events)
 
         monthly_summary = None
-        if generate_monthly_summary and selected_events:
+        if generate_monthly_summary and use_llm and selected_events:
             monthly_summary = generate_monthly_report(selected_events, model=llm_model)
 
         now_iso = datetime.now(timezone.utc).isoformat()

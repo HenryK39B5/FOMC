@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: fomc
-Version: 0.1.0
-Summary: FOMC research toolkit (data, reports, macro events, web portal)
-Author: FOMC Team
-Requires-Python: >=3.10

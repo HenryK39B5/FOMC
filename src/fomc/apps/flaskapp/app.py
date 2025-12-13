@@ -33,6 +33,8 @@ from fomc.data.indicators.charts.industry_job_contributions import IndustryContr
 from fomc.data.indicators.charts.unemployment_rate_comparison import UnemploymentRateComparisonBuilder
 from fomc.data.indicators.charts.cpi_report import CpiReportBuilder
 from fomc.reports.report_generator import EconomicReportGenerator, IndicatorSummary, ReportFocus
+from fomc.data.macro_events.db import get_connection as get_macro_events_connection, get_month_record as get_macro_month_record
+from fomc.data.macro_events.month_service import ensure_month_events
 
 # 创建引擎和会话
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
@@ -111,6 +113,88 @@ def format_delta(current, reference, decimals: int = 1):
         return None
     delta = current - reference
     return f"{delta:+.{decimals}f}"
+
+
+def strip_markdown_fences(text: str | None) -> str | None:
+    """
+    Remove leading ```lang and trailing ``` fences that some LLMs wrap Markdown with.
+    """
+    if not text:
+        return text
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    lines = stripped.splitlines()
+    if not lines:
+        return text
+    if lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip() if lines else ""
+
+
+def build_macro_events_context(month_key: str, use_llm: bool) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+    """
+    Ensure macro events exist for month_key and return (context_text, meta, error).
+    """
+
+    def _clean(text: str) -> str:
+        text = (text or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        return text
+
+    def _truncate(text: str, max_len: int = 260) -> str:
+        text = _clean(text)
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 3].rstrip() + "..."
+
+    try:
+        events = ensure_month_events(
+            month_key,
+            report_type="macro",
+            use_llm=use_llm,
+            fetch_bodies=use_llm,
+            generate_monthly_summary=use_llm,
+            max_events=20,
+        )
+        conn = get_macro_events_connection()
+        try:
+            record = get_macro_month_record(conn, month_key, "macro")
+            monthly_summary = record["monthly_summary"] if record else None
+        finally:
+            conn.close()
+
+        lines = []
+        if monthly_summary:
+            lines.append("月度摘要:")
+            lines.append(_truncate(monthly_summary, 700))
+        if events:
+            lines.append("事件列表（按重要性）：")
+            for evt in (events or [])[:12]:
+                date_text = (evt.get("date") or "")[:10]
+                title = _truncate(evt.get("title") or "", 120)
+                shock = evt.get("macro_shock_type") or "other"
+                channels = evt.get("impact_channel") or []
+                if isinstance(channels, str):
+                    channels = [channels]
+                channel_text = ",".join([c for c in channels if c]) if channels else "NA"
+                summary = _truncate(evt.get("summary_zh") or evt.get("summary_en") or "", 240)
+                score = evt.get("importance_score")
+                score_text = f"{float(score):.1f}" if score is not None else "NA"
+                lines.append(f"- {date_text} | {shock} | 影响:{channel_text} | 重要度:{score_text} | {title}")
+                if summary:
+                    lines.append(f"  摘要: {summary}")
+        context_text = "\n".join(lines).strip() if lines else None
+        meta = {
+            "month_key": month_key,
+            "monthly_summary": monthly_summary,
+            "events": events[:20] if events else [],
+        }
+        return context_text, meta, None
+    except Exception as exc:
+        return None, None, str(exc)
 
 
 def simple_markdown_to_html(md_text: str) -> str:
@@ -973,16 +1057,23 @@ def generate_labor_market_report():
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
     report_text = None
     llm_error = None
+    macro_events_meta = None
+    macro_events_error = None
     if deepseek_key:
         try:
+            macro_events_context, macro_events_meta, macro_err = build_macro_events_context(report_month, use_llm=True)
+            if macro_err:
+                macro_events_error = f"宏观事件获取失败: {macro_err}"
             generator = build_economic_report()
             report_text = generator.generate_nonfarm_report(
                 report_month=report_month,
                 headline_summary=headline_summary,
                 labor_market_metrics=indicator_summaries,
                 policy_focus=policy_focus,
-                chart_commentary=chart_commentary
+                chart_commentary=chart_commentary,
+                macro_events_context=macro_events_context,
             )
+            report_text = strip_markdown_fences(report_text)
         except Exception as exc:
             llm_error = f"生成研报失败: {exc}"
     else:
@@ -1002,6 +1093,8 @@ def generate_labor_market_report():
         'unemployment_types_series': rate_series_summary,
         'employment_participation_series': employment_participation_series,
         'industry_contribution': industry_contribution,
+        'macro_events': macro_events_meta,
+        'macro_events_error': macro_events_error,
         'report_text': report_text,
         'llm_error': llm_error
     }
@@ -1440,8 +1533,13 @@ def generate_cpi_report():
     llm_error = None
     report_text = None
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    macro_events_meta = None
+    macro_events_error = None
     if deepseek_key:
         try:
+            macro_events_context, macro_events_meta, macro_err = build_macro_events_context(report_month, use_llm=True)
+            if macro_err:
+                macro_events_error = f"宏观事件获取失败: {macro_err}"
             generator = build_economic_report()
             report_text = generator.generate_cpi_report(
                 report_month=report_month,
@@ -1449,8 +1547,10 @@ def generate_cpi_report():
                 inflation_metrics=indicator_summaries,
                 contributions_text_yoy=format_contribution_lines(cpi_payload.contributions_yoy),
                 contributions_text_mom=format_contribution_lines(cpi_payload.contributions_mom),
-                chart_commentary=chart_commentary
+                chart_commentary=chart_commentary,
+                macro_events_context=macro_events_context,
             )
+            report_text = strip_markdown_fences(report_text)
         except Exception as exc:
             llm_error = f'生成CPI研报失败: {exc}'
     else:
@@ -1499,6 +1599,8 @@ def generate_cpi_report():
         "contributions_mom": serialize_contrib(cpi_payload.contributions_mom),
         "indicators": ui_metrics,
         "weight_year": weight_year,
+        "macro_events": macro_events_meta,
+        "macro_events_error": macro_events_error,
         "report_text": report_text,
         "llm_error": llm_error
     }

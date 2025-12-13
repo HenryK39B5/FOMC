@@ -1,46 +1,23 @@
-"""Thin client for calling an LLM (DeepSeek by default) to improve event summaries."""
+"""Thin client wrappers for macro-events LLM calls (shared DeepSeek client)."""
 
 from __future__ import annotations
 
-import os
 from typing import Dict, List, Optional
 
-from fomc.config import load_env
-
-try:
-    from openai import OpenAI
-except ImportError as exc:  # pragma: no cover - dependency missing
-    raise ImportError("Please install openai (pip install openai)") from exc
+from fomc.infra.llm import LLMClient
 
 
-def _get_deepseek_config():
-    # Best effort load .env once
-    load_env()
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    if not api_key:
-        raise RuntimeError("DEEPSEEK_API_KEY is missing; please set it in your environment")
-    return api_key, base_url, model
-
-
-def call_llm(messages: List[Dict[str, str]], model: Optional[str] = None, temperature: float = 0.3, max_tokens: int = 512) -> str:
+def call_llm(
+    messages: List[Dict[str, str]],
+    model: Optional[str] = None,
+    temperature: float = 0.3,
+    max_tokens: int = 512,
+) -> str:
     """
-    Call the DeepSeek chat completion API (OpenAI SDK compatible).
+    Call the shared LLM client for chat completions.
     """
-    api_key, base_url, default_model = _get_deepseek_config()
-    model = model or default_model
-    client = OpenAI(api_key=api_key, base_url=base_url)
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        stream=False,
-    )
-    if not resp or not resp.choices:
-        raise RuntimeError(f"LLM returned no choices: {resp}")
-    return resp.choices[0].message.content
+    client = LLMClient()
+    return client.chat(messages, model=model, temperature=temperature, max_tokens=max_tokens)
 
 
 def summarize_events_with_llm(events: List[Dict], report_type: str, model: Optional[str] = None) -> List[Dict]:

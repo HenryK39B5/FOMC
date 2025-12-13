@@ -8,9 +8,10 @@ from typing import Iterator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from fomc.config import MAIN_DB_PATH, load_env
+from fomc.config import DATA_DIR, MAIN_DB_PATH, load_env
 
 load_env()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = f"sqlite:///{MAIN_DB_PATH}"
 engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
@@ -29,4 +30,3 @@ def session_scope() -> Iterator[Session]:
         raise
     finally:
         session.close()
-

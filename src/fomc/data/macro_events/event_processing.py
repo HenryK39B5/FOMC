@@ -221,6 +221,8 @@ def enrich_events_with_llm(events: List[Dict], report_type: str, use_llm: bool =
     """
     if not events:
         return events
+    if not use_llm:
+        return events
     try:
         from .llm_client import summarize_events_with_llm, llm_rank_and_filter
     except Exception:

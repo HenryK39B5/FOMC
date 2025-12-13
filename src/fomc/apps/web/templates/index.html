@@ -3,58 +3,37 @@
 {% block content %}
 <section class="hero">
   <div class="hero-card">
-    <div class="pill">FOMC 学习 × 研究 双模式</div>
-    <h1>一个入口，串起研报与宏观事件月报</h1>
-    <p class="lede">
-      已经接通「经济指标研报」与「宏观事件月报」两个子系统。选择月份即可生成非农/CPI 图表与解读，
-      同时抓取该月的高信号宏观新闻并生成月度摘要。规则模型与会议模拟暂未开放，页面上仅保留占位提示。
-    </p>
+    <div class="pill">三入口 · 单一骨架</div>
+    <h1>FOMC Portal</h1>
+    <p class="lede">简洁的主页，只呈现入口，不堆砌开发说明。</p>
     <div class="actions">
-      <a class="btn" href="/reports">进入研报工作台</a>
-      <a class="btn secondary" href="/macro-events">查看宏观事件月报</a>
-    </div>
-  </div>
-  <div class="card">
-    <div class="title">本轮重构</div>
-    <div class="muted">数据/研报与宏观事件在同一入口可见，取消 FedWatch 相关占位。</div>
-    <div class="chips">
-      <span class="chip live">研报撰写</span>
-      <span class="chip live">宏观事件</span>
-      <span class="chip disabled">规则模型（待接入）</span>
-      <span class="chip disabled">会议模拟（待接入）</span>
+      <a class="btn" href="/toolbox">进入工具箱</a>
+      <span class="chip disabled">美联储 101（即将上线）</span>
+      <span class="chip disabled">历史会议模拟（即将上线）</span>
     </div>
   </div>
 </section>
 
-<h3 class="section-title">功能面板</h3>
+<h3 class="section-title">入口</h3>
 <div class="grid feature-grid">
-  <a class="card" href="/reports">
-    <div class="title">研报工作台</div>
-    <div class="muted">一键生成非农与 CPI 研报，复用数据库与图表管线，可导出 Markdown。月度输入默认为 {{ default_month }}。</div>
-    <div class="chips">
-      <span class="chip">PAYEMS · UNRATE</span>
-      <span class="chip">CPI-U</span>
-      <span class="chip">DeepSeek 文本</span>
-    </div>
-  </a>
-  <a class="card" href="/macro-events">
-    <div class="title">宏观事件月报</div>
-    <div class="muted">DDG 搜索 + LLM 聚合，输出事件时间线与月报 Markdown，并落库于同一入口可见。</div>
-    <div class="chips">
-      <span class="chip">DDGS</span>
-      <span class="chip">事件聚类</span>
-      <span class="chip">LLM 摘要</span>
-    </div>
-  </a>
   <div class="card">
-    <div class="title">规则模型</div>
-    <div class="muted">暂未开发，本区域只作占位。后续会接入 Taylor / Balanced / First-Difference 规则计算。</div>
-    <div class="chip disabled">敬请期待</div>
+    <div class="title">美联储 101</div>
+    <div class="muted">学习模式（数据/规则/沟通模块的解释层）。</div>
+    <div class="chip disabled">暂未开放</div>
   </div>
   <div class="card">
-    <div class="title">会议模拟</div>
-    <div class="muted">历史会议流程与 Agent 讨论尚未接入，本版本仅提供导航占位。</div>
-    <div class="chip disabled">敬请期待</div>
+    <div class="title">历史会议模拟</div>
+    <div class="muted">按会议日期重放“数据→研报→模型→讨论→决议”。</div>
+    <div class="chip disabled">暂未开放</div>
   </div>
+  <a class="card" href="/toolbox">
+    <div class="title">工具箱</div>
+    <div class="muted">已可用：非农/CPI 研报生成 + 宏观事件月报 + 数据浏览。</div>
+    <div class="chips">
+      <span class="chip">研报生成</span>
+      <span class="chip">宏观事件</span>
+      <span class="chip">共享 LLM</span>
+    </div>
+  </a>
 </div>
 {% endblock %}
