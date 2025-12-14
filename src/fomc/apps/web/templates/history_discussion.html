@@ -1,0 +1,441 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flow-shell">
+  {% include "history_shared_sidebar.html" %}
+
+  <section class="flow-main">
+    <div class="card">
+      <div class="field-row" style="flex-wrap: wrap; align-items: center;">
+        <div>
+          <div class="pill">委员讨论 · LLM</div>
+          <div class="muted" style="font-size: 13px; margin-top: 8px;">
+            由主持人编排：先基于会议材料生成“讨论底稿（可引用要点）”，再由 Hawk/Dove/Centrist 进行开场陈述与定向质询，最后投票并生成声明/纪要。
+          </div>
+          <details class="muted" style="font-size: 13px; margin-top: 10px;">
+            <summary style="cursor:pointer;">讨论规则（简要）</summary>
+            <div style="margin-top: 8px; line-height: 1.7;">
+              <div>1) 发言必须引用“讨论底稿”中的编号（Fxx/Uxx），不引入新事实；</div>
+              <div>2) 公开轮次：开场陈述 → 主持人定向质询 → 政策方案讨论与投票；</div>
+              <div>3) 票型默认只允许 -25/0/+25bp（常态会议）。</div>
+            </div>
+          </details>
+        </div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+          <label class="muted" style="font-size: 13px; display:flex; align-items:center; gap:6px;">
+            <input id="refresh-toggle" type="checkbox" />
+            强制刷新（忽略缓存）
+          </label>
+          <button class="btn" id="btn-run">生成讨论</button>
+          <span id="status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <div id="result" class="card report-body" style="margin-top: 14px;"></div>
+
+    <div class="flow-nav">
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/model">上一步：规则模型</a>
+      <a class="btn" href="/history/{{ meeting.meeting_id }}/decision">下一步：决议 / 纪要</a>
+    </div>
+  </section>
+</div>
+
+<style>
+  .ref-fab {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 60;
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(17, 24, 39, 0.92);
+    color: rgba(233,237,245,0.9);
+    backdrop-filter: blur(10px);
+    cursor: pointer;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+  }
+  .ref-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    display: none;
+    background: rgba(0,0,0,0.55);
+  }
+  .ref-drawer {
+    position: absolute;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: min(520px, 92vw);
+    background: rgba(15, 23, 42, 0.98);
+    border-left: 1px solid rgba(255,255,255,0.10);
+    padding: 14px;
+    overflow: auto;
+  }
+  .ref-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .ref-head .title {
+    margin: 0;
+    font-size: 16px;
+  }
+  .ref-close {
+    margin-left: auto;
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.06);
+    cursor: pointer;
+    color: rgba(233,237,245,0.9);
+  }
+  .ref-tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .ref-tab {
+    padding: 7px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.04);
+    cursor: pointer;
+    font-size: 13px;
+    color: rgba(233,237,245,0.85);
+    user-select: none;
+  }
+  .ref-tab.active {
+    border-color: rgba(56, 189, 248, 0.35);
+    background: rgba(56, 189, 248, 0.12);
+  }
+  .ref-search {
+    width: 100%;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.03);
+    color: rgba(233,237,245,0.9);
+  }
+  .ref-panel {
+    margin-top: 12px;
+  }
+  .ref-item {
+    padding: 10px 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .ref-item code {
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.10);
+  }
+  .ref-mini {
+    font-size: 12px;
+    opacity: 0.8;
+    margin-top: 6px;
+  }
+  .ref-materials {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ref-material-btn {
+    padding: 7px 10px;
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.10);
+    background: rgba(255,255,255,0.04);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .ref-material-host {
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255,255,255,0.08);
+    background: rgba(255,255,255,0.03);
+  }
+  .ref-material-host .muted { font-size: 13px; }
+</style>
+
+<button id="ref-fab" class="ref-fab" type="button" title="打开参考面板（讨论底稿 / 风险 / 立场卡 / 会议材料）">参考面板</button>
+<div id="ref-overlay" class="ref-overlay" aria-hidden="true">
+  <div class="ref-drawer" role="dialog" aria-modal="true" aria-label="参考面板">
+    <div class="ref-head">
+      <div class="title">参考面板</div>
+      <button id="ref-close" class="ref-close" type="button">关闭</button>
+    </div>
+    <div class="muted" style="font-size: 12px; margin-top: 6px;">
+      随时查看“讨论底稿/风险/可投选项/立场卡/会议材料”，无需回到页面顶部。
+    </div>
+    <div id="ref-tabs" class="ref-tabs"></div>
+    <input id="ref-search" class="ref-search" placeholder="筛选（按编号或关键词，例如 F03 / 通胀 / 就业）" />
+    <div id="ref-panel" class="ref-panel"></div>
+  </div>
+</div>
+
+<script>
+  const meetingId = "{{ meeting.meeting_id }}";
+  const statusEl = document.getElementById("status");
+  const resultEl = document.getElementById("result");
+  const refreshEl = document.getElementById("refresh-toggle");
+  const overlayEl = document.getElementById("ref-overlay");
+  const fabEl = document.getElementById("ref-fab");
+  const closeEl = document.getElementById("ref-close");
+  const tabsEl = document.getElementById("ref-tabs");
+  const searchEl = document.getElementById("ref-search");
+  const panelEl = document.getElementById("ref-panel");
+  let cachedDiscussion = null;
+  let activeTab = "facts";
+  let loadedMaterials = {};
+
+  const escapeHtml = (str) =>
+    (str || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+
+  const openDrawer = () => {
+    overlayEl.style.display = "block";
+    overlayEl.setAttribute("aria-hidden", "false");
+  };
+  const closeDrawer = () => {
+    overlayEl.style.display = "none";
+    overlayEl.setAttribute("aria-hidden", "true");
+  };
+
+  const setTab = (key) => {
+    activeTab = key;
+    for (const btn of tabsEl.querySelectorAll(".ref-tab")) {
+      btn.classList.toggle("active", btn.dataset.key === key);
+    }
+    renderPanel();
+  };
+
+  const renderTabs = () => {
+    const tabs = [
+      { key: "facts", label: "讨论要点（F）" },
+      { key: "uncertainties", label: "不确定性（U）" },
+      { key: "policy", label: "可投选项" },
+      { key: "stance", label: "立场卡" },
+      { key: "materials", label: "会议材料" },
+      { key: "vote", label: "政策方案/投票" },
+    ];
+    tabsEl.innerHTML = tabs.map(t => `<div class="ref-tab ${t.key === activeTab ? "active" : ""}" data-key="${t.key}">${escapeHtml(t.label)}</div>`).join("");
+    tabsEl.querySelectorAll(".ref-tab").forEach(el => el.addEventListener("click", () => setTab(el.dataset.key)));
+  };
+
+  const getFilter = () => String(searchEl?.value || "").trim().toLowerCase();
+
+  const renderFacts = (bb) => {
+    const q = getFilter();
+    const facts = Array.isArray(bb?.facts) ? bb.facts : [];
+    const filtered = q ? facts.filter(f => `${f.id} ${f.source} ${f.text}`.toLowerCase().includes(q)) : facts;
+    if (!filtered.length) return `<div class="muted">无匹配内容。</div>`;
+    return filtered.map(f => `
+      <div class="ref-item">
+        <div><code>${escapeHtml(f.id || "")}</code> <span class="muted">[${escapeHtml(f.source || "")}]</span></div>
+        <div style="margin-top: 6px;">${escapeHtml(f.text || "")}</div>
+      </div>
+    `).join("");
+  };
+
+  const renderUncs = (bb) => {
+    const q = getFilter();
+    const uncs = Array.isArray(bb?.uncertainties) ? bb.uncertainties : [];
+    const filtered = q ? uncs.filter(u => `${u.id} ${u.text}`.toLowerCase().includes(q)) : uncs;
+    if (!filtered.length) return `<div class="muted">无匹配内容。</div>`;
+    return filtered.map(u => `
+      <div class="ref-item">
+        <div><code>${escapeHtml(u.id || "")}</code></div>
+        <div style="margin-top: 6px;">${escapeHtml(u.text || "")}</div>
+      </div>
+    `).join("");
+  };
+
+  const renderPolicy = (bb) => {
+    const menu = Array.isArray(bb?.policy_menu) ? bb.policy_menu : [];
+    if (!menu.length) return `<div class="muted">暂无可投选项。</div>`;
+    return menu.map(it => `
+      <div class="ref-item">
+        <div><code>${escapeHtml(it.key || "")}</code> <span class="muted">${escapeHtml(String(it.delta_bps))}bp</span></div>
+        <div style="margin-top: 6px;">${escapeHtml(it.label || "")}</div>
+      </div>
+    `).join("");
+  };
+
+  const renderStance = (stance) => {
+    const q = getFilter();
+    const cards = stance && typeof stance === "object" ? stance : {};
+    const roles = Object.keys(cards);
+    if (!roles.length) return `<div class="muted">暂无立场卡（可能尚未生成）。</div>`;
+    const blocks = roles.map(role => ({ role, card: cards[role] })).filter(x => x.card && typeof x.card === "object");
+    const filtered = q ? blocks.filter(b => JSON.stringify(b).toLowerCase().includes(q)) : blocks;
+    if (!filtered.length) return `<div class="muted">无匹配内容。</div>`;
+    return filtered.map(({ role, card }) => `
+      <div class="ref-item">
+        <div><span class="chip">${escapeHtml(String(role).toUpperCase())}</span> <span class="muted">preferred: ${escapeHtml(String(card.preferred_delta_bps))}bp</span></div>
+        <div class="ref-mini">${escapeHtml(card.one_sentence_position || "")}</div>
+        ${card.citation_error ? `<div class="ref-mini" style="color:#fca5a5;">引用校验：${escapeHtml(card.citation_error)}</div>` : ""}
+      </div>
+    `).join("");
+  };
+
+  const fetchMaterial = async (kind) => {
+    if (loadedMaterials[kind]) return loadedMaterials[kind];
+    const resp = await fetch(`/api/history/${meetingId}/materials/${kind}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data?.detail || "加载材料失败");
+    loadedMaterials[kind] = data;
+    return data;
+  };
+
+  const renderMaterials = () => {
+    const buttons = [
+      { kind: "macro", label: "宏观事件（会议级）" },
+      { kind: "nfp", label: "NFP（会议级）" },
+      { kind: "cpi", label: "CPI（会议级）" },
+      { kind: "taylor", label: "Taylor（会议级）" },
+    ];
+    return `
+      <div class="muted" style="font-size: 13px; line-height: 1.7;">
+        这些“会议级材料”会在生成材料步骤或生成讨论时自动落盘到 <code>data/meeting_runs/&lt;meeting_id&gt;/</code>，供委员讨论引用。
+      </div>
+      <div class="ref-materials" style="margin-top: 10px;">
+        ${buttons.map(b => `<button class="ref-material-btn" data-kind="${b.kind}" type="button">${escapeHtml(b.label)}</button>`).join("")}
+      </div>
+      <div id="ref-material-host" class="ref-material-host"><div class="muted">点击上方按钮查看。</div></div>
+    `;
+  };
+
+  const bindMaterialButtons = () => {
+    const host = document.getElementById("ref-material-host");
+    panelEl.querySelectorAll(".ref-material-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const kind = btn.dataset.kind;
+        host.innerHTML = `<div class="muted">加载中…</div>`;
+        try {
+          const data = await fetchMaterial(kind);
+          host.innerHTML = data.html || `<pre style="white-space:pre-wrap; margin:0;">${escapeHtml(data.text || "")}</pre>`;
+        } catch (e) {
+          host.innerHTML = `<div class="muted">错误：${escapeHtml(e.message || String(e))}</div>`;
+        }
+      });
+    });
+  };
+
+  const renderVote = (ctx) => {
+    const pkgs = ctx?.packages?.packages;
+    const votes = ctx?.votes?.votes;
+    let html = "";
+    if (Array.isArray(pkgs) && pkgs.length) {
+      html += `<div class="muted" style="font-size:13px;">主持人提出的政策方案：</div>`;
+      html += pkgs.map(p => `
+        <div class="ref-item">
+          <div><code>方案${escapeHtml(p.key || "")}</code> <span class="muted">${escapeHtml(String(p.delta_bps))}bp</span> · <span class="muted">${escapeHtml(p.stance || "")}</span></div>
+          <div style="margin-top:6px;">${escapeHtml(p.guidance || "")}</div>
+        </div>
+      `).join("");
+    }
+    if (Array.isArray(votes) && votes.length) {
+      html += `<div class="muted" style="font-size:13px; margin-top:12px;">投票：</div>`;
+      html += votes.map(v => `
+        <div class="ref-item">
+          <div><span class="chip">${escapeHtml(String(v.role || "").toUpperCase())}</span> <span class="muted">${escapeHtml(String(v.vote_delta_bps))}bp</span></div>
+          <div class="ref-mini">${escapeHtml(v.reason || "")}</div>
+          ${v.citation_error ? `<div class="ref-mini" style="color:#fca5a5;">引用校验：${escapeHtml(v.citation_error)}</div>` : ""}
+        </div>
+      `).join("");
+    }
+    return html || `<div class="muted">暂无政策方案/投票信息。</div>`;
+  };
+
+  const renderPanel = () => {
+    const ctx = cachedDiscussion;
+    const bb = ctx?.blackboard;
+    const stance = ctx?.stance_cards;
+    if (!ctx || !bb) {
+      panelEl.innerHTML = `<div class="muted">尚未生成讨论。先点击“生成讨论”。</div>`;
+      return;
+    }
+    if (activeTab === "facts") panelEl.innerHTML = renderFacts(bb);
+    else if (activeTab === "uncertainties") panelEl.innerHTML = renderUncs(bb);
+    else if (activeTab === "policy") panelEl.innerHTML = renderPolicy(bb);
+    else if (activeTab === "stance") panelEl.innerHTML = renderStance(stance);
+    else if (activeTab === "materials") {
+      panelEl.innerHTML = renderMaterials();
+      bindMaterialButtons();
+    } else if (activeTab === "vote") panelEl.innerHTML = renderVote(ctx);
+  };
+
+  const loadCached = async () => {
+    statusEl.textContent = "加载缓存…";
+    resultEl.innerHTML = "";
+    try {
+      const resp = await fetch(`/api/history/${meetingId}/discussion`);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "加载失败");
+      cachedDiscussion = data;
+      renderTabs();
+      renderPanel();
+      if (data?.html) {
+        resultEl.innerHTML = data.html;
+        statusEl.textContent = data.cached ? "已加载缓存" : "已加载";
+      } else {
+        resultEl.innerHTML = `<div class="muted">暂无讨论记录。点击“生成讨论”。</div>`;
+        statusEl.textContent = "未生成";
+      }
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+      resultEl.innerHTML = `<div class="muted">${escapeHtml(e.message || String(e))}</div>`;
+    }
+  };
+
+  const runJob = async () => {
+    const refresh = refreshEl?.checked ? "true" : "false";
+    statusEl.textContent = "启动任务…";
+    resultEl.innerHTML = "";
+    try {
+      const resp = await fetch(`/api/history/${meetingId}/jobs/discussion?refresh=${refresh}`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "任务启动失败");
+      const jobId = data.job_id;
+      if (!jobId) throw new Error("未返回 job_id");
+
+      const start = Date.now();
+      while (true) {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const job = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(job?.detail || "任务查询失败");
+        if (job.status === "success") break;
+        if (job.status === "error") throw new Error(job.error || "任务失败");
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+        statusEl.textContent = `生成中…（${elapsed}s）`;
+        await new Promise(res => setTimeout(res, 900));
+      }
+      await loadCached();
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+      resultEl.innerHTML = `<div class="muted">${escapeHtml(e.message || String(e))}</div>`;
+    }
+  };
+
+  document.getElementById("btn-run")?.addEventListener("click", runJob);
+  fabEl?.addEventListener("click", openDrawer);
+  closeEl?.addEventListener("click", closeDrawer);
+  overlayEl?.addEventListener("click", (e) => { if (e.target === overlayEl) closeDrawer(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+  searchEl?.addEventListener("input", () => renderPanel());
+  loadCached();
+</script>
+{% endblock %}

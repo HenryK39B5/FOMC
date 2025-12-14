@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flow-shell">
+  {% include "history_shared_sidebar.html" %}
+
+  <section class="flow-main">
+    <div class="card">
+      <div class="field-row" style="flex-wrap: wrap; align-items: center;">
+        <div>
+          <div class="pill">决议 / 纪要 · LLM</div>
+          <div class="muted" style="font-size: 13px; margin-top: 8px;">
+            读取讨论与投票结果，生成 Statement 与 Minutes 摘要（中文）。
+          </div>
+        </div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+          <label class="muted" style="font-size: 13px; display:flex; align-items:center; gap:6px;">
+            <input id="refresh-toggle" type="checkbox" />
+            强制刷新（忽略缓存）
+          </label>
+          <button class="btn" id="btn-run">生成（含讨论）</button>
+          <span id="status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid" style="grid-template-columns: 1fr; gap: 14px; margin-top: 14px;">
+      <div class="card">
+        <div class="title">投票</div>
+        <div id="votes" class="muted" style="font-size: 13px; margin-top: 10px;"></div>
+      </div>
+
+      <div class="card">
+        <div class="title">Statement</div>
+        <div id="statement" class="report-body" style="margin-top: 10px;"></div>
+      </div>
+
+      <div class="card">
+        <div class="title">Minutes 摘要</div>
+        <div id="minutes" class="report-body" style="margin-top: 10px;"></div>
+      </div>
+    </div>
+
+    <div class="flow-nav">
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/discussion">上一步：委员讨论</a>
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/overview">返回概览</a>
+    </div>
+  </section>
+</div>
+
+<script>
+  const meetingId = "{{ meeting.meeting_id }}";
+  const statusEl = document.getElementById("status");
+  const votesEl = document.getElementById("votes");
+  const statementEl = document.getElementById("statement");
+  const minutesEl = document.getElementById("minutes");
+  const refreshEl = document.getElementById("refresh-toggle");
+
+  const escapeHtml = (str) =>
+    (str || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+
+  const renderVotes = (votesPayload) => {
+    const v = Array.isArray(votesPayload?.votes) ? votesPayload.votes : null;
+    if (!Array.isArray(v) || v.length === 0) return `<div class="muted">暂无投票。</div>`;
+    const items = v.map(it => {
+      const role = (it.role || "").toUpperCase();
+      const delta = it.vote_delta_bps;
+      const reason = it.reason || "";
+      return `<div style="margin-top:6px;"><span class="chip">${escapeHtml(role)}</span> <span class="muted">${escapeHtml(String(delta))}bp</span> — ${escapeHtml(reason)}</div>`;
+    });
+    return items.join("");
+  };
+
+  const load = async () => {
+    statusEl.textContent = "加载缓存…";
+    votesEl.innerHTML = "";
+    statementEl.innerHTML = "";
+    minutesEl.innerHTML = "";
+    try {
+      const resp = await fetch(`/api/history/${meetingId}/decision`);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "加载失败");
+      votesEl.innerHTML = renderVotes(data.votes || {});
+      statementEl.innerHTML = data.statement_html || `<div class="muted">暂无 statement。</div>`;
+      minutesEl.innerHTML = data.minutes_summary_html || `<div class="muted">暂无 minutes 摘要。</div>`;
+      statusEl.textContent = data.cached ? "已加载缓存" : "已加载";
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+      votesEl.innerHTML = `<div class="muted">${escapeHtml(e.message || String(e))}</div>`;
+    }
+  };
+
+  const run = async () => {
+    const refresh = refreshEl?.checked ? "true" : "false";
+    statusEl.textContent = "启动任务…";
+    try {
+      const resp = await fetch(`/api/history/${meetingId}/jobs/discussion?refresh=${refresh}`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "任务启动失败");
+      const jobId = data.job_id;
+      if (!jobId) throw new Error("未返回 job_id");
+      const start = Date.now();
+      while (true) {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const job = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(job?.detail || "任务查询失败");
+        if (job.status === "success") break;
+        if (job.status === "error") throw new Error(job.error || "任务失败");
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+        statusEl.textContent = `生成中…（${elapsed}s）`;
+        await new Promise(res => setTimeout(res, 900));
+      }
+      await load();
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+    }
+  };
+
+  document.getElementById("btn-run")?.addEventListener("click", run);
+  load();
+</script>
+{% endblock %}

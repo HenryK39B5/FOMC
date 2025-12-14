@@ -33,9 +33,25 @@ from fomc.data.meetings.run_store import (
     load_manifest,
     set_context,
     read_artifact_text,
+    read_artifact_json,
     write_artifact_text,
+    write_artifact_json,
 )
 from fomc.infra.llm import LLMClient
+from fomc.data.meetings.discussion_service import (
+    DEFAULT_ROLES,
+    build_blackboard,
+    infer_crisis_mode,
+    generate_stance_card,
+    generate_public_speech,
+    chair_select_questions,
+    chair_propose_packages,
+    generate_package_preference,
+    generate_vote,
+    secretary_round_summary,
+    chair_write_statement_and_minutes,
+    render_discussion_markdown,
+)
 from fomc.rules.taylor_rule import ModelType
 from fomc.data.modeling.taylor_service import build_taylor_series_from_db
 from datetime import timedelta
@@ -409,15 +425,42 @@ def ensure_meeting_taylor_md(meeting_id: str, *, refresh: bool = False) -> dict:
         session.close()
 
     metrics = payload.get("metrics") or {}
+    series = payload.get("series") or []
+
+    def _fmt(x) -> str:
+        try:
+            if x is None:
+                return "—"
+            v = float(x)
+            if v != v:  # NaN
+                return "—"
+            return f"{v:.2f}%"
+        except Exception:
+            return "—"
+
+    taylor_latest = metrics.get("taylorLatest")
+    fed_latest = metrics.get("fedLatest")
+    spread_latest = metrics.get("spread")
+    if (taylor_latest is None or fed_latest is None) and series:
+        try:
+            last = series[-1] if isinstance(series, list) else None
+            if isinstance(last, dict):
+                taylor_latest = taylor_latest if taylor_latest is not None else last.get("taylor")
+                fed_latest = fed_latest if fed_latest is not None else last.get("fed")
+                if spread_latest is None and last.get("taylor") is not None and last.get("fed") is not None:
+                    spread_latest = float(last.get("fed")) - float(last.get("taylor"))
+        except Exception:
+            pass
+
     lines = [
         "# 政策规则模型（Taylor Rule）\n",
         f"Meeting: {meeting_id}\n",
         f"- 窗口：{start_date} → {end_date}\n",
         "",
         "## 最新读数\n",
-        f"- Taylor: {metrics.get('taylor')}\n",
-        f"- EFFR: {metrics.get('fed')}\n",
-        f"- Spread: {metrics.get('spread')}\n",
+        f"- Taylor: {_fmt(taylor_latest)}\n",
+        f"- EFFR: {_fmt(fed_latest)}\n",
+        f"- Spread: {_fmt(spread_latest)}\n",
         "",
     ]
     text = "\n".join(lines).strip() + "\n"
@@ -435,12 +478,279 @@ def ensure_meeting_materials_all(meeting_id: str, *, refresh: bool = False) -> d
     return results
 
 
+def ensure_meeting_discussion_pack(meeting_id: str, *, refresh: bool = False) -> dict:
+    """
+    Run the meeting discussion simulation:
+    - blackboard.json (facts/uncertainties)
+    - stance_cards.json
+    - discussion.md (public transcript)
+    - votes.json
+    - statement.md
+    - minutes_summary.md
+    """
+    run = ensure_meeting_run(meeting_id)
+    manifest = load_manifest(run)
+    existing = manifest.get("artifacts") or {}
+    if not refresh and all(k in existing for k in ["discussion", "statement", "minutes_summary", "votes", "blackboard", "stance_cards"]):
+        return {
+            "cached": True,
+            "artifacts": {k: existing.get(k) for k in ["discussion", "statement", "minutes_summary", "votes", "blackboard", "stance_cards"]},
+        }
+
+    # Ensure upstream materials exist (meeting-level markdown artifacts).
+    _ = ensure_meeting_materials_all(meeting_id, refresh=refresh)
+    macro = read_artifact_text(run, "macro") or ""
+    nfp = read_artifact_text(run, "nfp") or ""
+    cpi = read_artifact_text(run, "cpi") or ""
+    taylor = read_artifact_text(run, "taylor") or ""
+
+    llm = LLMClient()
+    blackboard = build_blackboard(meeting_id=meeting_id, source_materials={"macro": macro, "nfp": nfp, "cpi": cpi, "taylor": taylor}, llm=llm)
+    crisis_mode = bool(infer_crisis_mode(blackboard))
+
+    stance_cards: dict[str, dict] = {}
+    for role in DEFAULT_ROLES:
+        stance_cards[role.role] = generate_stance_card(
+            meeting_id=meeting_id,
+            role=role,
+            blackboard=blackboard,
+            crisis_mode=crisis_mode,
+            llm=llm,
+        )
+
+    # Phase 2: opening statements (public)
+    opening_order = [r for r in DEFAULT_ROLES if r.role in {"centrist", "hawk", "dove"}]
+    opening_order = sorted(opening_order, key=lambda r: {"centrist": 0, "hawk": 1, "dove": 2}.get(r.role, 9))
+    opening_speeches: list[dict] = []
+    open_questions: list[str] = []
+    for role in opening_order:
+        speech = generate_public_speech(
+            meeting_id=meeting_id,
+            role=role,
+            blackboard=blackboard,
+            stance_card=stance_cards.get(role.role) or {},
+            phase_name="opening_statements",
+            chair_question=None,
+            llm=llm,
+        )
+        opening_speeches.append(speech)
+        q = str(speech.get("ask_one_question") or "").strip()
+        if q:
+            open_questions.append(q)
+
+    # Add 1-2 questions from private stance cards as backup (still treated as open_questions pool).
+    for role in DEFAULT_ROLES:
+        sc = stance_cards.get(role.role) or {}
+        for q in (sc.get("questions_to_ask") or [])[:2]:
+            q = str(q or "").strip()
+            if q:
+                open_questions.append(q)
+
+    # De-dupe and cap.
+    seen = set()
+    open_questions_dedup: list[str] = []
+    for q in open_questions:
+        qq = re.sub(r"\s+", " ", q).strip()
+        if not qq or qq in seen:
+            continue
+        seen.add(qq)
+        open_questions_dedup.append(qq)
+    open_questions = open_questions_dedup[:10]
+
+    round_summaries: list[dict] = []
+    round_summaries.append(
+        secretary_round_summary(
+            meeting_id=meeting_id,
+            blackboard=blackboard,
+            round_name="opening_statements",
+            transcript_blocks=opening_speeches,
+            llm=llm,
+        )
+    )
+
+    # Phase 3: chair-directed Q&A (public)
+    chair_q = chair_select_questions(
+        meeting_id=meeting_id,
+        blackboard=blackboard,
+        stance_cards=stance_cards,
+        open_questions=open_questions,
+        llm=llm,
+        max_questions=6,
+    )
+
+    qa_speeches: list[dict] = []
+    role_by_name = {r.role: r for r in DEFAULT_ROLES}
+    for item in chair_q.get("directed_questions") or []:
+        to_role = str(item.get("to_role") or "").strip().lower()
+        question = str(item.get("question") or "").strip()
+        role = role_by_name.get(to_role)
+        if not role or not question:
+            continue
+        qa_speeches.append(
+            generate_public_speech(
+                meeting_id=meeting_id,
+                role=role,
+                blackboard=blackboard,
+                stance_card=stance_cards.get(role.role) or {},
+                phase_name="directed_qa",
+                chair_question=question,
+                llm=llm,
+            )
+        )
+
+    round_summaries.append(
+        secretary_round_summary(
+            meeting_id=meeting_id,
+            blackboard=blackboard,
+            round_name="directed_qa",
+            transcript_blocks=qa_speeches,
+            llm=llm,
+        )
+    )
+
+    # Phase 4: packages + vote
+    packages = chair_propose_packages(meeting_id=meeting_id, blackboard=blackboard, stance_cards=stance_cards, llm=llm)
+    pkgs_list = packages.get("packages") or []
+
+    package_views: list[dict] = []
+    votes: list[dict] = []
+    for role in opening_order:
+        package_views.append(
+            generate_package_preference(
+                meeting_id=meeting_id,
+                role=role,
+                blackboard=blackboard,
+                stance_card=stance_cards.get(role.role) or {},
+                packages=pkgs_list,
+                llm=llm,
+            )
+        )
+        votes.append(
+            generate_vote(
+                meeting_id=meeting_id,
+                role=role,
+                blackboard=blackboard,
+                stance_card=stance_cards.get(role.role) or {},
+                packages=pkgs_list,
+                crisis_mode=crisis_mode,
+                llm=llm,
+            )
+        )
+
+    drafts = chair_write_statement_and_minutes(
+        meeting_id=meeting_id,
+        blackboard=blackboard,
+        votes=votes,
+        round_summaries=round_summaries,
+        llm=llm,
+    )
+
+    discussion_md = render_discussion_markdown(
+        meeting_id=meeting_id,
+        blackboard=blackboard,
+        crisis_mode=crisis_mode,
+        stance_cards=stance_cards,
+        opening_speeches=opening_speeches,
+        chair_q=chair_q,
+        qa_speeches=qa_speeches,
+        packages=packages,
+        package_views=package_views,
+        votes=votes,
+    )
+
+    artifacts: dict[str, Any] = {}
+    artifacts["blackboard"] = write_artifact_json(run, "blackboard", blackboard, meta={"kind": "blackboard"})
+    artifacts["stance_cards"] = write_artifact_json(run, "stance_cards", stance_cards, meta={"kind": "stance_cards"})
+    artifacts["round_summaries"] = write_artifact_json(run, "round_summaries", {"rounds": round_summaries}, meta={"kind": "round_summaries"})
+    artifacts["packages"] = write_artifact_json(run, "packages", packages, meta={"kind": "packages"})
+    artifacts["votes"] = write_artifact_json(run, "votes", {"votes": votes}, meta={"kind": "votes", "crisis_mode": crisis_mode})
+    artifacts["discussion"] = write_artifact_text(run, "discussion", discussion_md, meta={"kind": "discussion", "crisis_mode": crisis_mode})
+    artifacts["statement"] = write_artifact_text(run, "statement", drafts["statement_md"], meta={"kind": "statement"})
+    artifacts["minutes_summary"] = write_artifact_text(run, "minutes_summary", drafts["minutes_summary_md"], meta={"kind": "minutes_summary"})
+
+    return {"cached": False, "artifacts": artifacts}
+
+
+def get_meeting_discussion_cached(meeting_id: str) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    manifest = load_manifest(run)
+    text = read_artifact_text(run, "discussion")
+    artifact = (manifest.get("artifacts") or {}).get("discussion")
+    html_text = _render_markdown(text) if text else None
+    return {
+        "cached": text is not None,
+        "text": text,
+        "html": html_text,
+        "artifact": artifact,
+        "blackboard": read_artifact_json(run, "blackboard"),
+        "stance_cards": read_artifact_json(run, "stance_cards"),
+        "round_summaries": read_artifact_json(run, "round_summaries"),
+        "packages": read_artifact_json(run, "packages"),
+        "votes": read_artifact_json(run, "votes"),
+        "manifest": {"meeting_id": meeting_id},
+    }
+
+
+def get_meeting_decision_cached(meeting_id: str) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    manifest = load_manifest(run)
+    statement = read_artifact_text(run, "statement")
+    minutes = read_artifact_text(run, "minutes_summary")
+    votes = read_artifact_json(run, "votes")
+    return {
+        "cached": bool(statement or minutes or votes),
+        "statement": statement,
+        "statement_html": _render_markdown(statement) if statement else None,
+        "minutes_summary": minutes,
+        "minutes_summary_html": _render_markdown(minutes) if minutes else None,
+        "votes": votes,
+        "artifacts": {
+            "statement": (manifest.get("artifacts") or {}).get("statement"),
+            "minutes_summary": (manifest.get("artifacts") or {}).get("minutes_summary"),
+            "votes": (manifest.get("artifacts") or {}).get("votes"),
+        },
+        "manifest": {"meeting_id": meeting_id},
+    }
+
+
+def start_meeting_discussion_job(*, meeting_id: str, refresh: bool = False) -> Dict[str, Any]:
+    job = _create_job("meeting-discussion")
+
+    def _run(writer: _JobWriter, **kwargs: Any) -> None:
+        mid = str(kwargs["meeting_id"])
+        r = bool(kwargs.get("refresh"))
+        writer.write(f"meeting_id={mid}\n")
+        writer.write(f"refresh={r}\n")
+
+        # Ensure manifest exists (records context).
+        _ = get_or_create_meeting_run(mid)
+
+        out = ensure_meeting_discussion_pack(mid, refresh=r)
+        with _JOB_LOCK:
+            job.result = {"meeting_id": mid, "cached": out.get("cached")}
+        writer.write("done\n")
+
+    thread = threading.Thread(
+        target=_run_job,
+        args=(job, _run, {"meeting_id": meeting_id, "refresh": refresh}),
+        daemon=True,
+    )
+    thread.start()
+    return {"job_id": job.id}
+
+
 def get_meeting_material_cached(meeting_id: str, kind: str) -> dict:
     run = ensure_meeting_run(meeting_id)
     text = read_artifact_text(run, kind)
     manifest = load_manifest(run)
     artifact = (manifest.get("artifacts") or {}).get(kind)
-    return {"cached": text is not None, "text": text, "artifact": artifact, "manifest": {"meeting_id": meeting_id}}
+    return {
+        "cached": text is not None,
+        "text": text,
+        "html": _render_markdown(text) if text else None,
+        "artifact": artifact,
+        "manifest": {"meeting_id": meeting_id},
+    }
 
 
 def start_meeting_material_job(*, meeting_id: str, kind: str, refresh: bool = False) -> Dict[str, Any]:

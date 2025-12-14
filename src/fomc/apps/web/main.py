@@ -26,8 +26,12 @@ from .backend import (
     ensure_meeting_cpi_md,
     ensure_meeting_taylor_md,
     ensure_meeting_materials_all,
+    ensure_meeting_discussion_pack,
     get_meeting_material_cached,
+    get_meeting_discussion_cached,
+    get_meeting_decision_cached,
     start_meeting_material_job,
+    start_meeting_discussion_job,
     meetings_timeline,
     list_macro_months,
     refresh_macro_month,
@@ -119,6 +123,8 @@ def history_meeting_step_page(request: Request, meeting_id: str, step: str) -> H
         "nfp": {"title": "非农就业研报（NFP）", "kind": "nfp", "toolbox_tab": "pane-labor", "template": "history_nfp.html"},
         "cpi": {"title": "CPI 研报", "kind": "cpi", "toolbox_tab": "pane-cpi", "template": "history_cpi.html"},
         "model": {"title": "政策规则（Taylor）", "kind": "taylor", "toolbox_tab": "pane-models", "template": "history_model.html"},
+        "discussion": {"title": "委员讨论（LLM）", "kind": "discussion", "toolbox_tab": "pane-models", "template": "history_discussion.html"},
+        "decision": {"title": "决议与纪要（LLM）", "kind": "decision", "toolbox_tab": "pane-models", "template": "history_decision.html"},
     }
     if step not in step_map:
         raise HTTPException(status_code=404, detail="Unknown step")
@@ -360,6 +366,46 @@ def api_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+@app.get("/api/history/{meeting_id}/discussion")
+def api_history_discussion_cached(meeting_id: str):
+    try:
+        return get_meeting_discussion_cached(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/history/{meeting_id}/discussion")
+def api_history_discussion_generate(meeting_id: str, refresh: bool = False):
+    try:
+        return ensure_meeting_discussion_pack(meeting_id, refresh=refresh)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/history/{meeting_id}/jobs/discussion")
+def api_history_discussion_job(meeting_id: str, refresh: bool = False):
+    try:
+        return start_meeting_discussion_job(meeting_id=meeting_id, refresh=refresh)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/history/{meeting_id}/decision")
+def api_history_decision_cached(meeting_id: str):
+    try:
+        return get_meeting_decision_cached(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/macro-events/refresh")

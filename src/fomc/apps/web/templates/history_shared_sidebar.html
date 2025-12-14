@@ -18,12 +18,12 @@
     <a class="flow-step {% if step=='model' %}active{% endif %}" href="/history/{{ meeting.meeting_id }}/model">
       <div class="kicker">Step 4</div><div class="name">规则模型</div>
     </a>
-    <div class="flow-step disabled">
-      <div class="kicker">Step 5</div><div class="name">委员讨论（待上线）</div>
-    </div>
-    <div class="flow-step disabled">
-      <div class="kicker">Step 6</div><div class="name">决议 / 纪要（待上线）</div>
-    </div>
+    <a class="flow-step {% if step=='discussion' %}active{% endif %}" href="/history/{{ meeting.meeting_id }}/discussion">
+      <div class="kicker">Step 5</div><div class="name">委员讨论</div>
+    </a>
+    <a class="flow-step {% if step=='decision' %}active{% endif %}" href="/history/{{ meeting.meeting_id }}/decision">
+      <div class="kicker">Step 6</div><div class="name">决议 / 纪要</div>
+    </a>
   </div>
 
   <div class="flow-actions">

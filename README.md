@@ -15,6 +15,7 @@
 
 ## 功能概览
 - Web 门户（`/toolbox`）：宏观事件、经济数据浏览/数据库管理、非农研报、CPI 研报、政策规则（泰勒规则等）。
+- 历史会议模拟（`/history`）：按会议时间线生成/缓存会议材料（宏观事件、NFP、CPI、Taylor），并可运行 LLM 委员讨论→投票→生成 Statement/Minutes。
 - 数据层：FRED 指标库 + 宏观事件库（SQLite），支持增量同步与浏览。
 - 研报层：基于指标与图表生成研报文本，并可导出 PDF（如安装 Playwright）。
 
@@ -36,4 +37,9 @@ uvicorn fomc.apps.web.main:app --app-dir src --reload --port 9000
 - 数据库：默认路径 `data/fomc_data.db`（指标/研报）和 `data/macro_events.db`（宏观事件），`fomc.config.paths` 统一管理并在缺失时自动创建目录。  
 - CLI：`python -m fomc.apps.cli.init_database` 创建表；`python -m fomc.apps.cli.process_all_indicators` 同步指标；宏观事件可通过 Web 入口触发刷新。  
 - 工具箱：可在「经济数据」中执行同步/单指标刷新/健康检查；在「政策规则」中计算利率规则模型并可调节平滑系数 ρ。  
+- 历史会议模拟：会议级材料与产物会落盘到 `data/meeting_runs/<meeting_id>/`（含 `manifest.json` 与各类 `.md` 工件），便于复现与缓存命中。
 - Web：推荐 `uvicorn fomc.apps.web.main:app --app-dir src --reload --port 9000`；如不开 reloader 可去掉 `--reload`。
+
+## 下一阶段：美联储 101（学习模式）
+- 目标：把“数据/研报/规则模型/沟通材料”的关键概念做成短章节 + 可执行小组件，并与历史会议流程互链（在流程页可随时打开解释卡）。
+- 状态：入口已预留（Web 顶部导航显示“美联储 101（待上线）”），下一阶段将补齐页面、章节结构与组件化解释内容。

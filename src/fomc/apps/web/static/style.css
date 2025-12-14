@@ -391,7 +391,9 @@ input[type="month"] {
 }
 
 .report-body p,
-.report-body .md-list {
+.report-body .md-list,
+.report-body ul,
+.report-body ol {
   max-width: 640px;
   width: 100%;
   margin-left: auto;
@@ -470,7 +472,16 @@ input[type="month"] {
   color: var(--text);
 }
 
-.report-body .md-list li {
+.report-body ul,
+.report-body ol {
+  margin: 6px auto 2px;
+  padding: 0 0 0 18px;
+  color: var(--text);
+}
+
+.report-body .md-list li,
+.report-body ul li,
+.report-body ol li {
   margin: 4px 0;
   color: var(--text);
 }

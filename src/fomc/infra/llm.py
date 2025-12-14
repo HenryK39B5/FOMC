@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+import time
+from typing import Optional, Sequence
 
 import requests
+from requests import Response
 
 from fomc.config import load_env
 
@@ -25,7 +27,8 @@ class LLMConfig:
     model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
     temperature: float = 0.25
     max_tokens: int = 1600
-    timeout: int = 60
+    timeout: int = int(os.getenv("DEEPSEEK_TIMEOUT", "120"))
+    retries: int = int(os.getenv("DEEPSEEK_RETRIES", "3"))
 
 
 # Backward-compatible alias for existing code
@@ -34,6 +37,8 @@ DeepSeekConfig = LLMConfig
 
 class LLMClient:
     """Minimal chat-completion client for DeepSeek/OpenAI-compatible endpoints."""
+
+    _RETRY_STATUS = {429, 500, 502, 503, 504}
 
     def __init__(self, config: Optional[LLMConfig] = None):
         self.config = config or LLMConfig()
@@ -60,10 +65,27 @@ class LLMClient:
             "Authorization": f"Bearer {self.api_key}",
         }
         url = f"{self.config.base_url.rstrip('/')}/v1/chat/completions"
-        resp = requests.post(url, json=payload, headers=headers, timeout=self.config.timeout)
-        resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        last_exc: Exception | None = None
+        attempts = max(1, int(self.config.retries))
+        for i in range(attempts):
+            try:
+                resp = requests.post(url, json=payload, headers=headers, timeout=self.config.timeout)
+                if resp.status_code in self._RETRY_STATUS:
+                    # Raise to unify retry path.
+                    raise requests.HTTPError(f"HTTP {resp.status_code}", response=resp)
+                resp.raise_for_status()
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+            except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+                last_exc = exc
+                resp: Response | None = getattr(exc, "response", None)  # type: ignore[assignment]
+                status = getattr(resp, "status_code", None)
+                should_retry = isinstance(exc, (requests.Timeout, requests.ConnectionError)) or (status in self._RETRY_STATUS)
+                if not should_retry or i == attempts - 1:
+                    raise
+                # Exponential backoff with a small base delay.
+                time.sleep(0.8 * (2**i))
+        raise last_exc or RuntimeError("LLM request failed")
 
 
 class DeepSeekClient(LLMClient):
@@ -71,4 +93,3 @@ class DeepSeekClient(LLMClient):
 
     def generate(self, messages: Sequence[dict], **kwargs) -> str:
         return self.chat(messages, **kwargs)
-
