@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime
+from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -120,18 +121,72 @@ def build_taylor_series_from_db(
     - output gap: computed from GDPC1 & GDPPOT and forward-filled to monthly
     """
     now = datetime.utcnow()
-    end = _parse_date(end_date) if end_date else now
-    start = _parse_date(start_date) if start_date else _default_date_window(end)[0]
+    requested_end = _parse_date(end_date) if end_date else now
+    requested_start = _parse_date(start_date) if start_date else None
 
-    inflation = load_indicator_series_by_code(inflation_code, session, start=start, end=end)
-    inflation_m = monthly_ffill(inflation)
-    inflation_transform = "raw"
-    if _infer_inflation_is_index(session, inflation_code, inflation_m):
-        inflation_m = _compute_yoy_percent_from_index(inflation_m)
-        inflation_transform = "yoy"
+    end = requested_end
+    start = requested_start if requested_start else _default_date_window(end)[0]
 
-    unemployment = load_indicator_series_by_code(unemployment_code, session, start=start, end=end)
-    unemployment_m = monthly_ffill(unemployment)
+    def _load_core_series(window_start: datetime, window_end: datetime) -> tuple[pd.DataFrame, str, pd.DataFrame]:
+        """
+        Load core inputs (inflation + unemployment) for a window.
+
+        If inflation is an index series, we compute YoY via pct_change(12), which requires
+        ~12 months of lookback; we therefore fetch inflation with lookback and then filter
+        back to [window_start, window_end].
+        """
+
+        inflation_start = window_start
+        # Extra lookback to ensure YoY has enough history even for short windows (e.g., 1Y).
+        inflation_lookback = timedelta(days=400)
+        inflation_fetch_start = window_start - inflation_lookback
+
+        inflation_raw = load_indicator_series_by_code(inflation_code, session, start=inflation_fetch_start, end=window_end)
+        inflation_m_local = monthly_ffill(inflation_raw)
+        inflation_transform_local = "raw"
+        if _infer_inflation_is_index(session, inflation_code, inflation_m_local):
+            inflation_m_local = _compute_yoy_percent_from_index(inflation_m_local)
+            inflation_transform_local = "yoy"
+
+        if not inflation_m_local.empty:
+            inflation_m_local["date"] = pd.to_datetime(inflation_m_local["date"])
+            inflation_m_local = inflation_m_local[
+                (inflation_m_local["date"] >= pd.Timestamp(inflation_start))
+                & (inflation_m_local["date"] <= pd.Timestamp(window_end))
+            ].reset_index(drop=True)
+
+        unemployment_raw = load_indicator_series_by_code(unemployment_code, session, start=window_start, end=window_end)
+        unemployment_m_local = monthly_ffill(unemployment_raw)
+        return inflation_m_local, inflation_transform_local, unemployment_m_local
+
+    inflation_m, inflation_transform, unemployment_m = _load_core_series(start, end)
+
+    # Clamp end_date to the latest common month for core inputs (inflation + unemployment).
+    # This avoids empty windows when the requested end_date is beyond DB coverage (e.g., future meetings).
+    try:
+        infl_max = pd.to_datetime(inflation_m["date"]).max() if not inflation_m.empty else None
+        unemp_max = pd.to_datetime(unemployment_m["date"]).max() if not unemployment_m.empty else None
+        common_end = None
+        if infl_max is not None and unemp_max is not None and infl_max == infl_max and unemp_max == unemp_max:
+            common_end = min(infl_max, unemp_max)
+        if common_end is not None:
+            common_end_dt = pd.Timestamp(common_end).to_pydatetime()
+            if end > common_end_dt:
+                # Preserve requested window length when both bounds were provided.
+                if requested_start is not None and end_date is not None:
+                    delta = end - requested_start
+                    end = common_end_dt
+                    start = end - delta
+                else:
+                    end = common_end_dt
+                    if requested_start is None:
+                        start = _default_date_window(end)[0]
+
+                # Reload core series with the adjusted window.
+                inflation_m, inflation_transform, unemployment_m = _load_core_series(start, end)
+    except Exception:
+        # Best-effort; never fail the whole API due to clamping logic.
+        pass
 
     nairu = load_indicator_series_by_code(nairu_code, session, start=start, end=end)
     nairu_m = monthly_ffill(nairu)

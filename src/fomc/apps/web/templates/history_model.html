@@ -1,0 +1,320 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flow-shell">
+  {% include "history_shared_sidebar.html" %}
+
+  <section class="flow-main">
+    <div class="card">
+      <div class="field-row" style="flex-wrap: wrap;">
+        <div>
+          <div class="pill">政策规则 · Taylor</div>
+          <div class="muted" style="font-size: 13px; margin-top: 8px;">
+            以会议决议日（{{ meeting.end_date }}）为窗口右端，直接绘制 Taylor vs EFFR（不区分与上次会议间隔 1/2 个月）。
+          </div>
+          <div class="muted" style="font-size: 12px; margin-top: 8px;">
+            数据频率：月度（通胀/失业率等为月度序列；EFFR 为日度但按月均值聚合）。
+          </div>
+        </div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+          <label class="muted" style="font-size: 13px; display:flex; align-items:center; gap:6px;">
+            区间
+            <select id="window" class="select" style="width: 110px;">
+              <option value="1Y" selected>近1年</option>
+              <option value="3Y">近3年</option>
+              <option value="5Y">近5年</option>
+              <option value="10Y">近10年</option>
+              <option value="custom">自定义</option>
+            </select>
+          </label>
+          <input id="start" class="input" type="date" title="起始日期" style="width: 150px;">
+          <input id="end" class="input" type="date" title="截止日期" style="width: 150px;">
+          <label class="muted" style="font-size: 13px; display:flex; align-items:center; gap:6px;">
+            ρ
+            <input id="rho" class="input" type="number" step="0.05" min="0" max="1" value="0.00" style="width: 110px;">
+          </label>
+          <button class="btn" id="btn-run" type="button">运行模型</button>
+        </div>
+      </div>
+      <div id="status" class="muted" style="font-size: 13px; margin-top: 10px;"></div>
+    </div>
+
+    <div class="grid model-grid history-model-grid" style="margin-top: 14px;">
+      <div class="card model-charts">
+        <div class="title">Taylor vs EFFR</div>
+        <div class="chart-stack">
+          <div class="chart-box">
+            <canvas id="taylor-chart"></canvas>
+          </div>
+          <div class="chart-box small">
+            <canvas id="spread-chart"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <div class="card model-formulas">
+        <div class="metric-row">
+          <div class="metric">
+            <div class="muted">Taylor</div>
+            <div class="title" id="metric-taylor">—</div>
+          </div>
+          <div class="metric">
+            <div class="muted">EFFR</div>
+            <div class="title" id="metric-fed">—</div>
+          </div>
+          <div class="metric">
+            <div class="muted">利差</div>
+            <div class="title" id="metric-spread">—</div>
+          </div>
+        </div>
+        <div id="taylor-formula" class="bb-formula">运行模型后显示关键参数与解释。</div>
+      </div>
+    </div>
+
+    <div class="flow-nav">
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/cpi">上一步：CPI研报</a>
+      <a class="btn secondary disabled" href="javascript:void(0)">下一步：委员讨论（待上线）</a>
+    </div>
+  </section>
+</div>
+
+<script>
+  const meetingEnd = "{{ meeting.end_date }}";
+  const statusEl = document.getElementById("status");
+  let taylorChart = null;
+  let spreadChart = null;
+
+  const colors = {
+    fed: "#22c55e",
+    taylor: "#38bdf8",
+    adjusted: "#f59e0b",
+    spread: "#94a3b8",
+    grid: "rgba(255,255,255,0.06)",
+    tick: "rgba(233,237,245,0.75)",
+  };
+
+  const fmtPct = (x) => {
+    if (x === null || x === undefined || Number.isNaN(Number(x))) return "—";
+    return `${Number(x).toFixed(2)}%`;
+  };
+
+  const toISO = (d) => d.toISOString().slice(0, 10);
+  const addYears = (iso, years) => {
+    const d = new Date(iso);
+    d.setFullYear(d.getFullYear() + years);
+    return toISO(d);
+  };
+
+  const inferDefaultRange = () => {
+    const end = meetingEnd;
+    const start = addYears(end, -1);
+    return { start, end };
+  };
+
+  const setRangeInputs = (start, end) => {
+    const s = document.getElementById("start");
+    const e = document.getElementById("end");
+    if (s && start) s.value = start;
+    if (e && end) e.value = end;
+  };
+
+  const applyWindowPreset = (preset) => {
+    const end = document.getElementById("end")?.value || meetingEnd;
+    if (!end) return;
+    const s = document.getElementById("start");
+    if (!s) return;
+    if (preset === "custom") return;
+    const years = preset === "3Y" ? -3 : preset === "5Y" ? -5 : preset === "10Y" ? -10 : -1;
+    s.value = addYears(end, years);
+  };
+
+  const renderTaylorExplain = (explain) => {
+    const host = document.getElementById("taylor-formula");
+    if (!host) return;
+    if (!explain) {
+      host.textContent = "暂无解释数据。";
+      return;
+    }
+    const terms = (explain.rule && explain.rule.terms) ? explain.rule.terms : [];
+
+    const box = (key, label, meaning, value, _editable, _step = "0.05") => {
+      const v = (value === null || value === undefined || Number.isNaN(Number(value))) ? "" : Number(value).toFixed(2);
+      const bottom = `<div class="bb-val">${v === "" ? "—" : v}</div>`;
+      const safeTitle = String(meaning || "").replace(/"/g, "&quot;");
+      return `
+        <span class="bb-box">
+          <span class="bb-top" title="${safeTitle}">${meaning || ""}</span>
+          <span class="bb-mid">${label || ""}</span>
+          ${bottom}
+        </span>
+      `;
+    };
+
+    const byKey = Object.fromEntries(terms.map((t) => [t.key, t]));
+    const b = (k, step) => {
+      const t = byKey[k] || {};
+      return box(k, t.label || k, t.meaning || "", t.value, !!t.editable, step);
+    };
+    const op = (s) => `<span class="bb-op">${s}</span>`;
+
+    const ruleResult = Number(explain.rule?.result ?? NaN);
+    const smoothResult = Number(explain.smoothing?.result ?? NaN);
+
+    const line1 = [
+      `<span class="bb-lhs">`,
+      `<span class="bb-box readonly"><span class="bb-top">理论利率</span><span class="bb-mid">i</span><span class="bb-val">${Number.isFinite(ruleResult) ? ruleResult.toFixed(2) : "—"}</span></span>`,
+      op("="),
+      `</span>`,
+      b("real_rate", "0.10"),
+      op("+"),
+      b("inflation", "0.01"),
+      op("+"),
+      b("alpha", "0.05"),
+      op("×"),
+      op("("),
+      b("inflation_gap", "0.01"),
+      op(")"),
+      op("+"),
+      b("beta", "0.05"),
+      op("×"),
+      b("okun", "0.05"),
+      op("×"),
+      op("("),
+      b("unemployment_gap", "0.01"),
+      op(")"),
+      op("+"),
+      b("output_gap", "0.01"),
+      op("+"),
+      b("intercept", "0.10"),
+    ].join("");
+
+    const line2 = [
+      `<span class="bb-lhs">`,
+      `<span class="bb-box readonly"><span class="bb-top">平滑利率</span><span class="bb-mid">i_adj</span><span class="bb-val">${Number.isFinite(smoothResult) ? smoothResult.toFixed(2) : "—"}</span></span>`,
+      op("="),
+      `</span>`,
+      b("rho", "0.05"),
+      op("×"),
+      `<span class="bb-box readonly"><span class="bb-top">先前 EFFR</span><span class="bb-mid">i_prev</span><span class="bb-val">${Number(explain.smoothing?.prev_fed ?? 0).toFixed(2)}</span></span>`,
+      op("+"),
+      op("("),
+      `<span class="bb-box readonly"><span class="bb-top">1-ρ</span><span class="bb-mid">1-ρ</span><span class="bb-val">${(1 - Number(explain.smoothing?.rho ?? 0)).toFixed(2)}</span></span>`,
+      op(")"),
+      op("×"),
+      `<span class="bb-box readonly"><span class="bb-top">Taylor</span><span class="bb-mid">i</span><span class="bb-val">${Number(explain.rule?.result ?? 0).toFixed(2)}</span></span>`,
+    ].join("");
+
+    const ruleSymbolic = explain.rule?.symbolic || "";
+    const smoothSymbolic = explain.smoothing?.symbolic || "";
+
+    host.innerHTML = `
+      <div class="bb-head">
+        <div class="muted">As of ${explain.as_of || "—"} · ${explain.model || ""} · ${explain.inflation_transform || "raw"}</div>
+      </div>
+      <div class="bb-block">
+        <div class="bb-title">政策规则</div>
+        <div class="bb-line one-line">${line1}</div>
+        <div class="bb-mini muted">${ruleSymbolic}</div>
+      </div>
+      <div class="bb-block">
+        <div class="bb-title">政策惯性</div>
+        <div class="bb-line one-line">${line2}</div>
+        <div class="bb-mini muted">${smoothSymbolic}</div>
+      </div>
+    `;
+  };
+
+  const runModel = async () => {
+    statusEl.textContent = "运行中…";
+    try {
+      const rho = Number(document.getElementById("rho").value || 0);
+      const start = document.getElementById("start")?.value || null;
+      const end = document.getElementById("end")?.value || meetingEnd || null;
+      const payload = {
+        model: "taylor",
+        start_date: start,
+        end_date: end,
+        rho: isFinite(rho) ? rho : 0.0,
+      };
+      const resp = await fetch("/api/models/taylor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "模型运行失败");
+
+      const series = data.series || [];
+      const labels = series.map(p => (p.date || "").slice(0, 10));
+      const fed = series.map(p => (p.fed != null ? Number(p.fed) : null));
+      const taylor = series.map(p => (p.taylor != null ? Number(p.taylor) : null));
+      const adjusted = series.map(p => (p.adjusted != null ? Number(p.adjusted) : null));
+      const spread = series.map(p => ((p.fed ?? 0) - (p.taylor ?? 0)));
+
+      const metrics = data.metrics || {};
+      document.getElementById("metric-taylor").textContent = fmtPct(metrics.taylorLatest);
+      document.getElementById("metric-fed").textContent = fmtPct(metrics.fedLatest);
+      document.getElementById("metric-spread").textContent = fmtPct(metrics.spread);
+
+      renderTaylorExplain(data.explain || null);
+
+      if (taylorChart) taylorChart.destroy();
+      taylorChart = new Chart(document.getElementById("taylor-chart"), {
+        type: "line",
+        data: {
+          labels,
+          datasets: [
+            { label: "EFFR（月均）", data: fed, borderColor: colors.fed, backgroundColor: "rgba(34,197,94,0.12)", tension: 0.18, pointRadius: 2 },
+            { label: "Taylor（原始）", data: taylor, borderColor: colors.taylor, backgroundColor: "rgba(56,189,248,0.10)", tension: 0.18, pointRadius: 2 },
+            { label: "Taylor（平滑）", data: adjusted, borderColor: colors.adjusted, backgroundColor: "rgba(245,158,11,0.10)", tension: 0.18, pointRadius: 2 },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: { legend: { labels: { color: colors.tick } } },
+          scales: {
+            x: { ticks: { color: colors.tick }, grid: { color: colors.grid } },
+            y: { ticks: { color: colors.tick }, grid: { color: colors.grid } },
+          },
+        },
+      });
+
+      if (spreadChart) spreadChart.destroy();
+      spreadChart = new Chart(document.getElementById("spread-chart"), {
+        type: "bar",
+        data: { labels, datasets: [{ label: "Fed - Taylor", data: spread, backgroundColor: "rgba(148,163,184,0.28)", borderColor: "rgba(148,163,184,0.55)", borderWidth: 1 }] },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: {
+            x: { ticks: { maxTicksLimit: 10, color: colors.tick }, grid: { color: colors.grid } },
+            y: { ticks: { color: colors.tick }, grid: { color: colors.grid } },
+          },
+          plugins: { legend: { labels: { color: colors.tick } } },
+        },
+      });
+
+      const meta = data.meta || {};
+      const windowText = meta.start_date && meta.end_date ? ` · 窗口 ${meta.start_date} → ${meta.end_date}` : "";
+      statusEl.textContent = `已生成 ${labels.length} 期（月度）${windowText}`;
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+    }
+  };
+
+  // Init default range: 1Y ending at meetingEnd.
+  (() => {
+    const d = inferDefaultRange();
+    setRangeInputs(d.start, d.end);
+    const windowSel = document.getElementById("window");
+    windowSel?.addEventListener("change", () => {
+      applyWindowPreset(windowSel.value);
+    });
+    document.getElementById("end")?.addEventListener("change", () => {
+      const preset = windowSel?.value || "custom";
+      if (preset !== "custom") applyWindowPreset(preset);
+    });
+  })();
+
+  document.getElementById("btn-run")?.addEventListener("click", runModel);
+  runModel();
+</script>
+{% endblock %}

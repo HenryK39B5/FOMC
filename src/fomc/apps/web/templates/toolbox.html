@@ -162,8 +162,38 @@
       document.querySelectorAll('.pane').forEach(p => p.style.display = 'none');
       tab.classList.add('active');
       document.getElementById(tab.dataset.pane).style.display = '';
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("tab", tab.dataset.pane);
+        window.history.replaceState({}, "", url.toString());
+      } catch (e) {}
     });
   });
+
+  // Deep-linking: /toolbox?tab=pane-cpi
+  (() => {
+    try {
+      const url = new URL(window.location.href);
+      const target = url.searchParams.get("tab");
+      if (!target) return;
+      const tab = document.querySelector(`.tab[data-pane="${target}"]`);
+      if (tab && !tab.classList.contains("disabled")) tab.click();
+    } catch (e) {}
+  })();
+
+  // Optional: /toolbox?month=YYYY-MM to prefill inputs
+  (() => {
+    try {
+      const url = new URL(window.location.href);
+      const month = url.searchParams.get("month");
+      if (!month) return;
+      const ids = ["macro-month", "labor-month", "cpi-month"];
+      ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el && el.tagName === "INPUT") el.value = month;
+      });
+    } catch (e) {}
+  })();
 
 	  const renderMarkdownLite = (text = "") => {
 	    const escapeHtml = (str) =>

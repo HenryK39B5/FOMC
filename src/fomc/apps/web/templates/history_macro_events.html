@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flow-shell">
+  {% include "history_shared_sidebar.html" %}
+
+  <section class="flow-main">
+    <div class="card">
+      <div class="field-row" style="flex-wrap: wrap; align-items: center;">
+        <div>
+          <div class="pill">宏观事件 · 事件时间线</div>
+          <div class="muted" style="font-size: 13px; margin-top: 8px;">
+            选择会议窗口内的月份，查看当月关键宏观事件与来源链接。
+          </div>
+        </div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+          <select id="month" class="select">
+            {% for m in context.report_months %}
+              <option value="{{ m }}" {% if m == focus_month %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn secondary" id="btn-load">加载</button>
+          <button class="btn" id="btn-refresh">刷新该月</button>
+        </div>
+      </div>
+      <div id="status" class="muted" style="font-size: 13px; margin-top: 10px;"></div>
+    </div>
+
+    <div class="card" style="margin-top: 14px;">
+      <div class="tabs">
+        <a class="tab active" href="/history/{{ meeting.meeting_id }}/macro/events">事件时间线</a>
+        <a class="tab" href="/history/{{ meeting.meeting_id }}/macro/report">月报（按月）</a>
+      </div>
+      <div id="events" class="macro-events"></div>
+    </div>
+
+    <div class="flow-nav">
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/overview">返回概览</a>
+      <a class="btn" href="/history/{{ meeting.meeting_id }}/macro/report">下一步：月报（按月）</a>
+    </div>
+  </section>
+</div>
+
+<script>
+  const monthEl = document.getElementById("month");
+  const statusEl = document.getElementById("status");
+  const eventsEl = document.getElementById("events");
+
+  const escapeHtml = (str) =>
+    (str || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+
+  const renderSourceChips = (sources = [], urls = []) => {
+    const chips = [];
+    for (let i = 0; i < Math.max(sources.length, urls.length); i++) {
+      const url = urls[i];
+      if (!url) continue;
+      const label = sources[i] || "来源";
+      chips.push(`<a class="source-chip" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`);
+    }
+    return chips.join("");
+  };
+
+  const renderEvents = (events = []) => {
+    if (!events.length) {
+      eventsEl.innerHTML = `<div class="muted">暂无事件（可尝试“刷新该月”）。</div>`;
+      return;
+    }
+    eventsEl.innerHTML = events.map(evt => {
+      const date = (evt.date || "").slice(0, 10);
+      const title = evt.title || "";
+      const score = evt.importance_score != null ? Number(evt.importance_score).toFixed(1) : "NA";
+      const shock = evt.macro_shock_type || "other";
+      const summary = evt.summary || "";
+      const chips = renderSourceChips(evt.sources || [], evt.source_urls || []);
+      return `
+        <div class="macro-event">
+          <div class="macro-event-top">
+            <div class="macro-event-title">${escapeHtml(title)}</div>
+            <div class="macro-event-badges">
+              <span class="chip">${escapeHtml(date || "—")}</span>
+              <span class="chip">${escapeHtml(shock)}</span>
+              <span class="chip">重要度 ${escapeHtml(score)}</span>
+            </div>
+          </div>
+          <div class="muted" style="font-size: 13px; line-height: 1.7;">${escapeHtml(summary)}</div>
+          <div class="source-chips">${chips}</div>
+        </div>
+      `;
+    }).join("");
+  };
+
+  const loadMonth = async (refresh=false) => {
+    const month = monthEl.value;
+    statusEl.textContent = refresh ? "刷新中…" : "加载中…";
+    try {
+      const resp = await fetch(`/api/macro-events?month=${encodeURIComponent(month)}&refresh=${refresh ? "true" : "false"}`);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "加载失败");
+      renderEvents(data.events || []);
+      statusEl.textContent = `${month} · ${data.num_events || 0} 条事件`;
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("month", month);
+        window.history.replaceState({}, "", url.toString());
+      } catch (e) {}
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+    }
+  };
+
+  document.getElementById("btn-load")?.addEventListener("click", () => loadMonth(false));
+  document.getElementById("btn-refresh")?.addEventListener("click", () => loadMonth(true));
+
+  // Restore month from querystring if provided.
+  try {
+    const qs = new URL(window.location.href).searchParams.get("month");
+    if (qs && monthEl.querySelector(`option[value="${qs}"]`)) monthEl.value = qs;
+  } catch (e) {}
+
+  loadMonth(false);
+</script>
+{% endblock %}
+

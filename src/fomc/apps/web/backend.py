@@ -6,7 +6,7 @@ and the macro-events pipeline so the portal can expose them behind one API.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 import io
 import threading
 import time
@@ -27,12 +27,539 @@ from fomc.data.macro_events.db import get_connection, get_month_record, get_even
 from fomc.data.macro_events.month_service import ensure_month_events
 from fomc.data.indicators.indicator_sync_pipeline import IndicatorSyncPipeline
 from fomc.data.indicators.data_updater import IndicatorDataUpdater
+from fomc.data.meetings.calendar_service import ensure_fomc_calendar
+from fomc.data.meetings.run_store import (
+    ensure_meeting_run,
+    load_manifest,
+    set_context,
+    read_artifact_text,
+    write_artifact_text,
+)
+from fomc.infra.llm import LLMClient
+from fomc.rules.taylor_rule import ModelType
+from fomc.data.modeling.taylor_service import build_taylor_series_from_db
+from datetime import timedelta
+from fomc.data.meetings.timeline_service import build_meetings_timeline
 
 load_env()
 
 
 class PortalError(RuntimeError):
     """Raised when an underlying app returns a failure."""
+
+
+DEFAULT_MEETING_RANGE_START = date(2010, 1, 1)
+DEFAULT_MEETING_RANGE_END = date(2027, 12, 31)
+DEFAULT_HISTORY_CUTOFF = date(2025, 12, 31)
+
+
+def _month_key(dt: date) -> str:
+    return f"{dt.year:04d}-{dt.month:02d}"
+
+
+def _add_months(dt: date, delta_months: int) -> date:
+    y = dt.year + (dt.month - 1 + delta_months) // 12
+    m = (dt.month - 1 + delta_months) % 12 + 1
+    return date(y, m, 1)
+
+
+def _month_key_offset(month_key: str, delta_months: int) -> str:
+    y, m = (int(x) for x in month_key.split("-", 1))
+    base = date(y, m, 1)
+    shifted = _add_months(base, delta_months)
+    return _month_key(shifted)
+
+
+def _compute_meeting_report_months(current_end: date, previous_end: Optional[date]) -> list[str]:
+    focus = _month_key(_add_months(date(current_end.year, current_end.month, 1), -1))
+    months = [focus]
+    if not previous_end:
+        return months
+
+    cur_idx = current_end.year * 12 + current_end.month
+    prev_idx = previous_end.year * 12 + previous_end.month
+    gap = cur_idx - prev_idx
+    if gap >= 2:
+        months.insert(0, _month_key_offset(focus, -1))
+    return months
+
+
+def get_meeting_context(
+    meeting_id: str,
+    *,
+    history_cutoff: date = DEFAULT_HISTORY_CUTOFF,
+    refresh_calendar: bool = False,
+) -> dict:
+    meetings = ensure_fomc_calendar(
+        start=DEFAULT_MEETING_RANGE_START,
+        end=DEFAULT_MEETING_RANGE_END,
+        force_refresh=refresh_calendar,
+    )
+    meetings = sorted(meetings, key=lambda m: m.end_date)
+
+    current = None
+    for m in meetings:
+        if m.meeting_id == meeting_id:
+            current = m
+            break
+    if not current:
+        raise PortalError(f"Meeting not found: {meeting_id}")
+
+    if current.end_date > history_cutoff:
+        raise PortalError("Future meetings are view-only and cannot be simulated yet.")
+
+    previous = None
+    for m in meetings:
+        if m.end_date < current.end_date:
+            previous = m
+        else:
+            break
+
+    report_months = _compute_meeting_report_months(current.end_date, previous.end_date if previous else None)
+    return {
+        "meeting": current.to_dict(),
+        "previous_meeting": previous.to_dict() if previous else None,
+        "report_months": report_months,
+        "history_cutoff": history_cutoff.isoformat(),
+        "notes": {
+            "meeting_id_convention": "meeting_id is meeting end date (statement release day)",
+            "report_months_logic": "Use 1 month if meetings are ~1 month apart; include 2 months if gap >= 2 months.",
+        },
+    }
+
+
+def get_or_create_meeting_run(meeting_id: str, *, refresh_calendar: bool = False) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    context = get_meeting_context(meeting_id, refresh_calendar=refresh_calendar)
+    manifest = set_context(run, context)
+    return manifest
+
+
+def get_meeting_run(meeting_id: str) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    return load_manifest(run)
+
+
+def ensure_meeting_macro_md(meeting_id: str, *, refresh: bool = False) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    cached = read_artifact_text(run, "macro")
+    if cached and not refresh:
+        return {"cached": True, "text": cached, "artifact": load_manifest(run).get("artifacts", {}).get("macro")}
+
+    context = get_meeting_context(meeting_id)
+    months = context["report_months"]
+
+    month_payloads: list[dict] = []
+    for month_key in months:
+        month_payloads.append(get_macro_month(month_key, refresh=refresh))
+
+    meeting_summary_md = None
+    try:
+        llm = LLMClient()
+        bullets: list[str] = []
+        for p in month_payloads:
+            mk = p.get("month_key")
+            summary = (p.get("monthly_summary_md") or "").strip()
+            events = p.get("events") or []
+            bullets.append(f"### {mk}\n")
+            if summary:
+                bullets.append(summary[:1200])
+            if events:
+                bullets.append("关键事件（Top 6）：")
+                for evt in (events or [])[:6]:
+                    date_text = (evt.get("date") or "")[:10]
+                    title = evt.get("title") or ""
+                    shock = evt.get("macro_shock_type") or "other"
+                    score = evt.get("importance_score")
+                    score_text = f"{float(score):.1f}" if score is not None else "NA"
+                    bullets.append(f"- {date_text} | {shock} | 重要度:{score_text} | {title}")
+            bullets.append("")
+
+        prompt = (
+            "你是FOMC会议材料撰写人。请基于给定的会议前宏观事件月报，"
+            "为“本次会议窗口（可能覆盖两个月）”写一份会议级摘要（中文Markdown）。\n\n"
+            "要求：\n"
+            "1) 重点不是复述，而是提炼“过去两个月的变化与趋势”；\n"
+            "2) 给出对通胀/增长/金融条件/风险偏好的影响路径；\n"
+            "3) 用 5-8 条要点 + 一段总结；\n"
+            "4) 字数约 400-700。\n\n"
+            f"会议：{meeting_id}\n"
+            f"覆盖月份：{', '.join(months)}\n\n"
+            "材料：\n"
+            + "\n".join(bullets)
+        )
+        meeting_summary_md = llm.chat(
+            [
+                {"role": "system", "content": "You write concise, high-signal FOMC meeting briefs in Chinese Markdown."},
+                {"role": "user", "content": prompt},
+            ]
+        ).strip()
+    except Exception:
+        meeting_summary_md = None
+
+    parts: list[str] = [f"# 宏观经济事件（会议窗口）\n\nMeeting: {meeting_id}\n\n覆盖月份：{', '.join(months)}\n"]
+    if meeting_summary_md:
+        parts.append("## 会议级摘要\n")
+        parts.append(meeting_summary_md.strip() + "\n")
+
+    for payload in month_payloads:
+        month_key = payload.get("month_key")
+        parts.append(f"## {month_key}\n")
+        summary = payload.get("monthly_summary_md") or "（无摘要）"
+        parts.append(summary.strip() + "\n")
+        events = payload.get("events") or []
+        if events:
+            parts.append("### 事件列表\n")
+            for evt in events:
+                date_text = (evt.get("date") or "")[:10]
+                title = evt.get("title") or ""
+                shock = evt.get("macro_shock_type") or "other"
+                score = evt.get("importance_score")
+                score_text = f"{float(score):.1f}" if score is not None else "NA"
+                parts.append(f"- {date_text} | {shock} | 重要度:{score_text} | {title}\n")
+                summary_line = (evt.get("summary") or "").strip()
+                if summary_line:
+                    parts.append(f"  - {summary_line}\n")
+        parts.append("\n")
+
+    text = "\n".join(parts).strip() + "\n"
+    artifact_meta = {"report_months": months, "source": "macro_events_db+pipeline", "has_meeting_summary": bool(meeting_summary_md)}
+    artifact = write_artifact_text(run, "macro", text, meta=artifact_meta)
+    return {"cached": False, "text": text, "artifact": artifact}
+
+
+def _report_text_md(title: str, month_key: str, payload: Dict[str, Any]) -> str:
+    llm_error = payload.get("llm_error")
+    report_text = payload.get("report_text")
+    headline = payload.get("headline_summary")
+    lines: list[str] = [f"# {title}\n", f"## {month_key}\n"]
+    if headline:
+        lines.append(f"**摘要**：{headline}\n")
+    if llm_error and not report_text:
+        lines.append(f"**LLM 错误**：{llm_error}\n")
+        return "\n".join(lines).strip() + "\n"
+    if report_text:
+        lines.append(report_text.strip() + "\n")
+    return "\n".join(lines).strip() + "\n"
+
+
+def ensure_meeting_labor_md(meeting_id: str, *, refresh: bool = False) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    cached = read_artifact_text(run, "nfp")
+    if cached and not refresh:
+        return {"cached": True, "text": cached, "artifact": load_manifest(run).get("artifacts", {}).get("nfp")}
+
+    context = get_meeting_context(meeting_id)
+    months = context["report_months"]
+
+    month_reports: list[Dict[str, Any]] = []
+    for month_key in months:
+        month_reports.append(generate_labor_report(month_key))
+
+    meeting_brief_md = None
+    try:
+        llm = LLMClient()
+        blocks: list[str] = []
+        for idx, month_key in enumerate(months):
+            p = month_reports[idx]
+            blocks.append(f"### {month_key}\n")
+            blocks.append(f"Headline: {p.get('headline_summary')}\n")
+            indicators = p.get("indicators") or []
+            if indicators:
+                blocks.append("Key metrics:")
+                for it in indicators[:8]:
+                    blocks.append(f"- {it.get('name')}: {it.get('latest_value')}{it.get('units') or ''} (MoM {it.get('mom_change') or 'NA'})")
+            chart_commentary = (p.get("chart_commentary") or "").strip()
+            if chart_commentary:
+                blocks.append(f"Chart: {chart_commentary[:500]}")
+            blocks.append("")
+
+        prompt = (
+            "你是FOMC会议材料撰写人。请基于过去 1-2 个月的非农与失业率信息，"
+            "写一份“本次会议的劳动力市场会议级简报”（中文Markdown）。\n\n"
+            "要求：\n"
+            "1) 如果覆盖两个月，必须对比两个月的变化与趋势，而非分别复述；\n"
+            "2) 输出结构：核心结论（5-7条）→ 风险点 → 对政策含义（偏鹰/偏鸽因素）；\n"
+            "3) 字数约 500-900。\n\n"
+            f"会议：{meeting_id}\n"
+            f"覆盖月份：{', '.join(months)}\n\n"
+            "材料：\n"
+            + "\n".join(blocks)
+        )
+        meeting_brief_md = llm.chat(
+            [
+                {"role": "system", "content": "You write concise, high-signal FOMC meeting briefs in Chinese Markdown."},
+                {"role": "user", "content": prompt},
+            ]
+        ).strip()
+    except Exception:
+        meeting_brief_md = None
+
+    parts: list[str] = [f"# 非农就业（会议级简报）\n\nMeeting: {meeting_id}\n\n覆盖月份：{', '.join(months)}\n"]
+    if meeting_brief_md:
+        parts.append("\n## 会议级结论\n")
+        parts.append(meeting_brief_md.strip() + "\n")
+    else:
+        # Fallback: include per-month tool reports (may be LLM or fallback text)
+        for month_key, payload in zip(months, month_reports):
+            parts.append(_report_text_md("非农就业研报（NFP）", month_key, payload))
+
+    text = "\n".join(parts).strip() + "\n"
+    artifact = write_artifact_text(
+        run,
+        "nfp",
+        text,
+        meta={"report_months": months, "source": "reports_flask+meeting_prompt", "has_meeting_brief": bool(meeting_brief_md)},
+    )
+    return {"cached": False, "text": text, "artifact": artifact}
+
+
+def ensure_meeting_cpi_md(meeting_id: str, *, refresh: bool = False) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    cached = read_artifact_text(run, "cpi")
+    if cached and not refresh:
+        return {"cached": True, "text": cached, "artifact": load_manifest(run).get("artifacts", {}).get("cpi")}
+
+    context = get_meeting_context(meeting_id)
+    months = context["report_months"]
+
+    month_reports: list[Dict[str, Any]] = []
+    for month_key in months:
+        month_reports.append(generate_cpi_report(month_key))
+
+    meeting_brief_md = None
+    try:
+        llm = LLMClient()
+        blocks: list[str] = []
+        for idx, month_key in enumerate(months):
+            p = month_reports[idx]
+            blocks.append(f"### {month_key}\n")
+            blocks.append(f"Headline: {p.get('headline_summary')}\n")
+            metrics = p.get("metrics") or []
+            if metrics:
+                blocks.append("Key metrics:")
+                for it in metrics[:8]:
+                    blocks.append(f"- {it.get('name')}: {it.get('value')} (Δ {it.get('delta') or 'NA'})")
+            contrib = p.get("contribution_table_md") or ""
+            if contrib:
+                blocks.append("Contribution highlights:")
+                blocks.append(contrib[:700])
+            blocks.append("")
+
+        prompt = (
+            "你是FOMC会议材料撰写人。请基于过去 1-2 个月的通胀信息（CPI/核心CPI 同比与环比，以及主要分项拉动），"
+            "写一份“本次会议的通胀会议级简报”（中文Markdown）。\n\n"
+            "要求：\n"
+            "1) 如果覆盖两个月，必须对比两个月的变化与趋势，而非分别复述；\n"
+            "2) 输出结构：核心结论（5-7条）→ 通胀路径判断（粘性/回落）→ 风险点 → 对政策含义；\n"
+            "3) 字数约 500-900。\n\n"
+            f"会议：{meeting_id}\n"
+            f"覆盖月份：{', '.join(months)}\n\n"
+            "材料：\n"
+            + "\n".join(blocks)
+        )
+        meeting_brief_md = llm.chat(
+            [
+                {"role": "system", "content": "You write concise, high-signal FOMC meeting briefs in Chinese Markdown."},
+                {"role": "user", "content": prompt},
+            ]
+        ).strip()
+    except Exception:
+        meeting_brief_md = None
+
+    parts: list[str] = [f"# CPI（会议级简报）\n\nMeeting: {meeting_id}\n\n覆盖月份：{', '.join(months)}\n"]
+    if meeting_brief_md:
+        parts.append("\n## 会议级结论\n")
+        parts.append(meeting_brief_md.strip() + "\n")
+    else:
+        for month_key, payload in zip(months, month_reports):
+            parts.append(_report_text_md("CPI 研报", month_key, payload))
+
+    text = "\n".join(parts).strip() + "\n"
+    artifact = write_artifact_text(
+        run,
+        "cpi",
+        text,
+        meta={"report_months": months, "source": "reports_flask+meeting_prompt", "has_meeting_brief": bool(meeting_brief_md)},
+    )
+    return {"cached": False, "text": text, "artifact": artifact}
+
+
+def ensure_meeting_taylor_md(meeting_id: str, *, refresh: bool = False) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    cached = read_artifact_text(run, "taylor")
+    if cached and not refresh:
+        return {"cached": True, "text": cached, "artifact": load_manifest(run).get("artifacts", {}).get("taylor")}
+
+    context = get_meeting_context(meeting_id)
+    meeting_end = date.fromisoformat(context["meeting"]["end_date"])
+    end_date = meeting_end.isoformat()
+    start_date = date(meeting_end.year - 10, meeting_end.month, 1).isoformat()
+
+    session = SessionLocal()
+    try:
+        payload = build_taylor_series_from_db(
+            session=session,
+            model=ModelType.TAYLOR,
+            start_date=start_date,
+            end_date=end_date,
+            rho=0.0,
+        )
+    finally:
+        session.close()
+
+    metrics = payload.get("metrics") or {}
+    lines = [
+        "# 政策规则模型（Taylor Rule）\n",
+        f"Meeting: {meeting_id}\n",
+        f"- 窗口：{start_date} → {end_date}\n",
+        "",
+        "## 最新读数\n",
+        f"- Taylor: {metrics.get('taylor')}\n",
+        f"- EFFR: {metrics.get('fed')}\n",
+        f"- Spread: {metrics.get('spread')}\n",
+        "",
+    ]
+    text = "\n".join(lines).strip() + "\n"
+    artifact = write_artifact_text(run, "taylor", text, meta={"model": "taylor", "start_date": start_date, "end_date": end_date})
+    return {"cached": False, "text": text, "artifact": artifact}
+
+
+def ensure_meeting_materials_all(meeting_id: str, *, refresh: bool = False) -> dict:
+    results = {
+        "macro": ensure_meeting_macro_md(meeting_id, refresh=refresh),
+        "nfp": ensure_meeting_labor_md(meeting_id, refresh=refresh),
+        "cpi": ensure_meeting_cpi_md(meeting_id, refresh=refresh),
+        "taylor": ensure_meeting_taylor_md(meeting_id, refresh=refresh),
+    }
+    return results
+
+
+def get_meeting_material_cached(meeting_id: str, kind: str) -> dict:
+    run = ensure_meeting_run(meeting_id)
+    text = read_artifact_text(run, kind)
+    manifest = load_manifest(run)
+    artifact = (manifest.get("artifacts") or {}).get(kind)
+    return {"cached": text is not None, "text": text, "artifact": artifact, "manifest": {"meeting_id": meeting_id}}
+
+
+def start_meeting_material_job(*, meeting_id: str, kind: str, refresh: bool = False) -> Dict[str, Any]:
+    """
+    Run meeting material generation in a background job, so the UI can poll progress.
+
+    kind: macro|nfp|cpi|taylor|all
+    """
+    kind = (kind or "").lower().strip()
+    if kind not in {"macro", "nfp", "cpi", "taylor", "all"}:
+        raise PortalError(f"Unknown material kind: {kind}")
+
+    job = _create_job(f"meeting-material:{kind}")
+
+    def _run(writer: _JobWriter, **kwargs: Any) -> None:
+        mid = str(kwargs["meeting_id"])
+        k = str(kwargs["kind"])
+        r = bool(kwargs.get("refresh"))
+        writer.write(f"meeting_id={mid}\n")
+        writer.write(f"kind={k} refresh={r}\n")
+
+        # Ensure manifest exists (records context).
+        _ = get_or_create_meeting_run(mid)
+
+        if k == "macro":
+            out = ensure_meeting_macro_md(mid, refresh=r)
+        elif k == "nfp":
+            out = ensure_meeting_labor_md(mid, refresh=r)
+        elif k == "cpi":
+            out = ensure_meeting_cpi_md(mid, refresh=r)
+        elif k == "taylor":
+            out = ensure_meeting_taylor_md(mid, refresh=r)
+        else:
+            out = ensure_meeting_materials_all(mid, refresh=r)
+
+        with _JOB_LOCK:
+            job.result = {"meeting_id": mid, "kind": k, "cached": out.get("cached") if isinstance(out, dict) else None}
+
+        writer.write("done\n")
+
+    thread = threading.Thread(
+        target=_run_job,
+        args=(job, _run, {"meeting_id": meeting_id, "kind": kind, "refresh": refresh}),
+        daemon=True,
+    )
+    thread.start()
+    return {"job_id": job.id}
+
+
+def list_fomc_meetings(
+    *,
+    start: date = DEFAULT_MEETING_RANGE_START,
+    end: date = DEFAULT_MEETING_RANGE_END,
+    history_cutoff: date = DEFAULT_HISTORY_CUTOFF,
+    refresh: bool = False,
+) -> dict:
+    meetings = ensure_fomc_calendar(start=start, end=end, force_refresh=refresh)
+    historical: list[dict] = []
+    future: list[dict] = []
+    for m in meetings:
+        payload = m.to_dict()
+        payload["status"] = "historical" if m.end_date <= history_cutoff else "future"
+        if payload["status"] == "historical":
+            historical.append(payload)
+        else:
+            future.append(payload)
+
+    historical.sort(key=lambda x: x["end_date"])
+    future.sort(key=lambda x: x["end_date"])
+    newest_historical_id = historical[-1]["meeting_id"] if historical else None
+    for item in historical:
+        item["is_newest_historical"] = item["meeting_id"] == newest_historical_id
+
+    return {
+        "range": {"start": start.isoformat(), "end": end.isoformat()},
+        "history_cutoff": history_cutoff.isoformat(),
+        "historical": historical,
+        "future": future,
+    }
+
+
+def meetings_timeline(
+    *,
+    start: date = DEFAULT_MEETING_RANGE_START,
+    end: date = DEFAULT_MEETING_RANGE_END,
+    history_cutoff: date = DEFAULT_HISTORY_CUTOFF,
+    refresh_calendar: bool = False,
+    k: int = 2,
+    m_hold: int = 3,
+    delta_threshold_bps: float = 1.0,
+) -> Dict[str, Any]:
+    session = SessionLocal()
+    try:
+        return build_meetings_timeline(
+            session=session,
+            start=start,
+            end=end,
+            history_cutoff=history_cutoff,
+            refresh_calendar=refresh_calendar,
+            k=k,
+            m_hold=m_hold,
+            delta_threshold_bps=delta_threshold_bps,
+        )
+    finally:
+        session.close()
+
+
+def get_fomc_meeting(
+    meeting_id: str,
+    *,
+    start: date = DEFAULT_MEETING_RANGE_START,
+    end: date = DEFAULT_MEETING_RANGE_END,
+    refresh: bool = False,
+) -> dict:
+    meetings = ensure_fomc_calendar(start=start, end=end, force_refresh=refresh)
+    for m in meetings:
+        if m.meeting_id == meeting_id:
+            return m.to_dict()
+    raise PortalError(f"Meeting not found: {meeting_id}")
 
 
 def _call_flask_json(path: str, payload: Dict[str, Any]) -> Dict[str, Any]:

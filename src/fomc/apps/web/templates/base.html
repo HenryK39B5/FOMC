@@ -10,7 +10,8 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
+<body class="{% if embed %}embed{% endif %}">
+  {% if not embed %}
   <header>
     <div class="nav">
       <div class="brand">
@@ -24,10 +25,11 @@
         <a href="/">主页</a>
         <a href="/toolbox">工具箱</a>
         <span class="chip disabled">美联储 101（待上线）</span>
-        <span class="chip disabled">历史会议模拟（待上线）</span>
+        <a href="/history">历史会议模拟</a>
       </div>
     </div>
   </header>
+  {% endif %}
   <main class="page">
     {% block content %}{% endblock %}
   </main>

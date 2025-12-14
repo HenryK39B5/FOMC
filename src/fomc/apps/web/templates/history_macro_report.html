@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flow-shell">
+  {% include "history_shared_sidebar.html" %}
+
+  <section class="flow-main">
+    <div class="card">
+      <div class="field-row" style="flex-wrap: wrap; align-items: center;">
+        <div>
+          <div class="pill">宏观事件 · 月报（按月）</div>
+          <div class="muted" style="font-size: 13px; margin-top: 8px;">
+            会议窗口可能覆盖 1-2 个月：这里按月查看月报，便于与工具箱保持一致的阅读体验。
+          </div>
+        </div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center; flex-wrap: wrap;">
+          <select id="month" class="select">
+            {% for m in context.report_months %}
+              <option value="{{ m }}" {% if m == focus_month %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn secondary" id="btn-load">加载</button>
+          <button class="btn" id="btn-refresh">刷新该月</button>
+        </div>
+      </div>
+      <div id="status" class="muted" style="font-size: 13px; margin-top: 10px;"></div>
+    </div>
+
+    <div class="card" style="margin-top: 14px;">
+      <div class="tabs">
+        <a class="tab" href="/history/{{ meeting.meeting_id }}/macro/events">事件时间线</a>
+        <a class="tab active" href="/history/{{ meeting.meeting_id }}/macro/report">月报（按月）</a>
+      </div>
+      <div id="month-summary" class="report-body"></div>
+    </div>
+
+    <div class="flow-nav">
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/macro/events">上一步：事件时间线</a>
+      <a class="btn" href="/history/{{ meeting.meeting_id }}/nfp">下一步：非农研报</a>
+    </div>
+  </section>
+</div>
+
+<script>
+  const monthEl = document.getElementById("month");
+  const statusEl = document.getElementById("status");
+  const summaryEl = document.getElementById("month-summary");
+
+  const escapeHtml = (str) =>
+    (str || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+
+  const loadMonth = async (refresh=false) => {
+    const month = monthEl.value;
+    statusEl.textContent = refresh ? "刷新中…" : "加载中…";
+    try {
+      const resp = await fetch(`/api/macro-events?month=${encodeURIComponent(month)}&refresh=${refresh ? "true" : "false"}`);
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "加载失败");
+      summaryEl.innerHTML = data.monthly_summary_html || `<div class="muted">无月报文本（可尝试“刷新该月”）。</div>`;
+      statusEl.textContent = `${month} · 月报已加载`;
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("month", month);
+        window.history.replaceState({}, "", url.toString());
+      } catch (e) {}
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+      summaryEl.innerHTML = `<div class="muted">${escapeHtml(e.message || String(e))}</div>`;
+    }
+  };
+
+  document.getElementById("btn-load")?.addEventListener("click", () => loadMonth(false));
+  document.getElementById("btn-refresh")?.addEventListener("click", () => loadMonth(true));
+
+  // Restore month from querystring if provided.
+  try {
+    const qs = new URL(window.location.href).searchParams.get("month");
+    if (qs && monthEl.querySelector(`option[value="${qs}"]`)) monthEl.value = qs;
+  } catch (e) {}
+
+  loadMonth(false);
+</script>
+{% endblock %}
+

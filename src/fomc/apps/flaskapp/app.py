@@ -1,6 +1,7 @@
 import base64
 import io
 import os
+import sqlite3
 from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 import json
@@ -16,7 +17,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from flask import Flask, render_template, jsonify, request, make_response, Response
 
-from fomc.config import MAIN_DB_PATH, load_env
+from fomc.config import MAIN_DB_PATH, REPORTS_DB_PATH, load_env
 
 load_env()
 
@@ -41,6 +42,93 @@ engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_threa
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 app = Flask(__name__, template_folder='templates')
+
+_REPORT_TEXT_CACHE_READY = False
+
+
+def _ensure_report_text_cache_table() -> None:
+    global _REPORT_TEXT_CACHE_READY
+    if _REPORT_TEXT_CACHE_READY:
+        return
+    conn = sqlite3.connect(str(REPORTS_DB_PATH))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_text_cache (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              report_type TEXT NOT NULL,
+              report_month TEXT NOT NULL,
+              model TEXT NOT NULL,
+              report_text TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              UNIQUE(report_type, report_month, model)
+            );
+            """
+        )
+        conn.commit()
+        _REPORT_TEXT_CACHE_READY = True
+    finally:
+        conn.close()
+
+
+def _get_cached_report_text(report_type: str, report_month: str, model: str) -> str | None:
+    _ensure_report_text_cache_table()
+    conn = sqlite3.connect(str(REPORTS_DB_PATH))
+    try:
+        cur = conn.execute(
+            "SELECT report_text FROM report_text_cache WHERE report_type=? AND report_month=? AND model=? LIMIT 1;",
+            (report_type, report_month, model),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0]
+    finally:
+        conn.close()
+
+    # Backward compatibility: older builds stored cache in MAIN_DB_PATH.
+    try:
+        legacy_conn = sqlite3.connect(str(MAIN_DB_PATH))
+        try:
+            cur = legacy_conn.execute(
+                "SELECT report_text FROM report_text_cache WHERE report_type=? AND report_month=? AND model=? LIMIT 1;",
+                (report_type, report_month, model),
+            )
+            row = cur.fetchone()
+            legacy_text = row[0] if row else None
+        finally:
+            legacy_conn.close()
+    except Exception:
+        legacy_text = None
+
+    if legacy_text:
+        try:
+            _upsert_cached_report_text(report_type, report_month, model, legacy_text)
+        except Exception:
+            pass
+        return legacy_text
+
+    return None
+
+
+def _upsert_cached_report_text(report_type: str, report_month: str, model: str, report_text: str) -> None:
+    _ensure_report_text_cache_table()
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn = sqlite3.connect(str(REPORTS_DB_PATH))
+    try:
+        conn.execute(
+            """
+            INSERT INTO report_text_cache (report_type, report_month, model, report_text, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(report_type, report_month, model) DO UPDATE SET
+              report_text=excluded.report_text,
+              updated_at=excluded.updated_at;
+            """,
+            (report_type, report_month, model, report_text, now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 def get_labor_chart_builder():
     """Singleton accessor so we reuse the same chart builder."""
@@ -1055,29 +1143,50 @@ def generate_labor_market_report():
     )
 
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    llm_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    force_llm = bool(payload.get("force_llm") or payload.get("refresh_llm") or False)
+
     report_text = None
+    report_text_source = None
     llm_error = None
     macro_events_meta = None
     macro_events_error = None
-    if deepseek_key:
+
+    if not force_llm:
         try:
-            macro_events_context, macro_events_meta, macro_err = build_macro_events_context(report_month, use_llm=True)
-            if macro_err:
-                macro_events_error = f"宏观事件获取失败: {macro_err}"
-            generator = build_economic_report()
-            report_text = generator.generate_nonfarm_report(
-                report_month=report_month,
-                headline_summary=headline_summary,
-                labor_market_metrics=indicator_summaries,
-                policy_focus=policy_focus,
-                chart_commentary=chart_commentary,
-                macro_events_context=macro_events_context,
-            )
-            report_text = strip_markdown_fences(report_text)
-        except Exception as exc:
-            llm_error = f"生成研报失败: {exc}"
-    else:
-        llm_error = "未配置DEEPSEEK_API_KEY，无法调用研报生成。"
+            cached = _get_cached_report_text("labor", report_month, llm_model)
+        except Exception:
+            cached = None
+        if cached:
+            report_text = cached
+            report_text_source = "cache"
+
+    if not report_text:
+        if deepseek_key:
+            try:
+                macro_events_context, macro_events_meta, macro_err = build_macro_events_context(report_month, use_llm=True)
+                if macro_err:
+                    macro_events_error = f"宏观事件获取失败: {macro_err}"
+                generator = build_economic_report()
+                report_text = generator.generate_nonfarm_report(
+                    report_month=report_month,
+                    headline_summary=headline_summary,
+                    labor_market_metrics=indicator_summaries,
+                    policy_focus=policy_focus,
+                    chart_commentary=chart_commentary,
+                    macro_events_context=macro_events_context,
+                )
+                report_text = strip_markdown_fences(report_text)
+                if report_text:
+                    try:
+                        _upsert_cached_report_text("labor", report_month, llm_model, report_text)
+                    except Exception:
+                        pass
+                    report_text_source = "llm"
+            except Exception as exc:
+                llm_error = f"生成研报失败: {exc}"
+        else:
+            llm_error = "未配置DEEPSEEK_API_KEY，且本地无缓存研报文本。"
 
     response = {
         'report_month': report_month,
@@ -1096,6 +1205,7 @@ def generate_labor_market_report():
         'macro_events': macro_events_meta,
         'macro_events_error': macro_events_error,
         'report_text': report_text,
+        'report_text_source': report_text_source,
         'llm_error': llm_error
     }
     return jsonify(response)
@@ -1532,29 +1642,49 @@ def generate_cpi_report():
 
     llm_error = None
     report_text = None
+    report_text_source = None
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    llm_model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+    force_llm = bool(payload.get("force_llm") or payload.get("refresh_llm") or False)
     macro_events_meta = None
     macro_events_error = None
-    if deepseek_key:
+
+    if not force_llm:
         try:
-            macro_events_context, macro_events_meta, macro_err = build_macro_events_context(report_month, use_llm=True)
-            if macro_err:
-                macro_events_error = f"宏观事件获取失败: {macro_err}"
-            generator = build_economic_report()
-            report_text = generator.generate_cpi_report(
-                report_month=report_month,
-                headline_summary=headline_summary,
-                inflation_metrics=indicator_summaries,
-                contributions_text_yoy=format_contribution_lines(cpi_payload.contributions_yoy),
-                contributions_text_mom=format_contribution_lines(cpi_payload.contributions_mom),
-                chart_commentary=chart_commentary,
-                macro_events_context=macro_events_context,
-            )
-            report_text = strip_markdown_fences(report_text)
-        except Exception as exc:
-            llm_error = f'生成CPI研报失败: {exc}'
-    else:
-        llm_error = "未配置DEEPSEEK_API_KEY，无法调用研报生成。"
+            cached = _get_cached_report_text("cpi", report_month, llm_model)
+        except Exception:
+            cached = None
+        if cached:
+            report_text = cached
+            report_text_source = "cache"
+
+    if not report_text:
+        if deepseek_key:
+            try:
+                macro_events_context, macro_events_meta, macro_err = build_macro_events_context(report_month, use_llm=True)
+                if macro_err:
+                    macro_events_error = f"宏观事件获取失败: {macro_err}"
+                generator = build_economic_report()
+                report_text = generator.generate_cpi_report(
+                    report_month=report_month,
+                    headline_summary=headline_summary,
+                    inflation_metrics=indicator_summaries,
+                    contributions_text_yoy=format_contribution_lines(cpi_payload.contributions_yoy),
+                    contributions_text_mom=format_contribution_lines(cpi_payload.contributions_mom),
+                    chart_commentary=chart_commentary,
+                    macro_events_context=macro_events_context,
+                )
+                report_text = strip_markdown_fences(report_text)
+                if report_text:
+                    try:
+                        _upsert_cached_report_text("cpi", report_month, llm_model, report_text)
+                    except Exception:
+                        pass
+                    report_text_source = "llm"
+            except Exception as exc:
+                llm_error = f'生成CPI研报失败: {exc}'
+        else:
+            llm_error = "未配置DEEPSEEK_API_KEY，且本地无缓存研报文本。"
 
     if not report_text:
         report_text = build_cpi_fallback_text(
@@ -1567,6 +1697,7 @@ def generate_cpi_report():
             contrib_rows=cpi_payload.contributions_yoy,
             weight_year=weight_year
         )
+        report_text_source = report_text_source or "fallback"
 
     def serialize_contrib(rows):
         output = []
@@ -1602,6 +1733,7 @@ def generate_cpi_report():
         "macro_events": macro_events_meta,
         "macro_events_error": macro_events_error,
         "report_text": report_text,
+        "report_text_source": report_text_source,
         "llm_error": llm_error
     }
     return jsonify(response)

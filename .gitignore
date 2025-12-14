@@ -3,6 +3,7 @@
 
 # Local databases / artifacts
 *.db
+data/
 __pycache__/
 *.pyc
 

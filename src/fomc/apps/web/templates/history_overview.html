@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <div class="hero-card">
+    <div class="pill">历史会议模拟 · 流程模式</div>
+    <h1 style="margin-top: 10px;">{{ meeting.label }}</h1>
+    <p class="lede" style="margin-bottom: 14px;">
+      会议开始：{{ meeting.start_date }} · 会议结束（决议日）：{{ meeting.end_date }} ·
+      需要覆盖月份：{{ ", ".join(context.report_months) }}
+    </p>
+    <div class="actions">
+      <a class="btn" href="/history/{{ meeting.meeting_id }}/macro/events">开始模拟</a>
+      <a class="btn secondary" href="/history">返回日历</a>
+      <a class="btn secondary" href="/toolbox">打开工具箱</a>
+      <a class="btn secondary" href="/api/history/{{ meeting.meeting_id }}/run" target="_blank" rel="noopener noreferrer">查看缓存</a>
+    </div>
+  </div>
+</section>
+
+<div class="grid" style="grid-template-columns: 1fr 1fr; gap: 16px; align-items: start;">
+  <div class="card">
+    <div class="title">流程</div>
+    <div class="muted" style="font-size: 13px; line-height: 1.7;">
+      把历史会议做成“像游戏关卡一样”的体验：每一页只做一件事，并且可一键回到工具箱对应功能继续探索。
+    </div>
+    <div class="chips" style="margin-top: 10px;">
+      <span class="chip">宏观事件</span>
+      <span class="chip">NFP</span>
+      <span class="chip">CPI</span>
+      <span class="chip">Taylor</span>
+      <span class="chip disabled">讨论（待上线）</span>
+      <span class="chip disabled">决议/纪要（待上线）</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="title">一键生成（可选）</div>
+    <div class="muted" style="font-size: 13px; line-height: 1.7;">
+      也可以先一次性生成全部材料并落盘，然后逐页阅读与对比。
+    </div>
+    <div class="field-row" style="gap: 10px; flex-wrap: wrap; margin-top: 10px;">
+      <label class="muted" style="font-size: 13px; display:flex; align-items:center; gap:6px;">
+        <input id="refresh-toggle" type="checkbox" />
+        强制刷新（忽略缓存）
+      </label>
+      <button class="btn" id="btn-all">生成全部材料</button>
+      <span id="status-all" class="muted"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  const meetingId = "{{ meeting.meeting_id }}";
+  const statusEl = document.getElementById("status-all");
+  const getRefresh = () => document.getElementById("refresh-toggle")?.checked ? "true" : "false";
+
+  document.getElementById("btn-all")?.addEventListener("click", async () => {
+    statusEl.textContent = "开始生成…";
+    try {
+      const resp = await fetch(`/api/history/${meetingId}/jobs/materials/all?refresh=${getRefresh()}`, { method: "POST" });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data?.detail || "任务启动失败");
+      const jobId = data.job_id;
+      if (!jobId) throw new Error("未返回 job_id");
+
+      const start = Date.now();
+      while (true) {
+        const r = await fetch(`/api/jobs/${jobId}`);
+        const job = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(job?.detail || "任务查询失败");
+        if (job.status === "success") break;
+        if (job.status === "error") throw new Error(job.error || "任务失败");
+        const elapsed = Math.floor((Date.now() - start) / 1000);
+        statusEl.textContent = `生成中…（${elapsed}s）`;
+        await new Promise(res => setTimeout(res, 900));
+      }
+      statusEl.textContent = "已生成并落盘";
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+    }
+  });
+
+  // Ensure run manifest exists (and records context)
+  fetch(`/api/history/${meetingId}/run`).catch(() => {});
+</script>
+{% endblock %}

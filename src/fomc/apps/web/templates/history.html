@@ -1,0 +1,436 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="timeline-shell">
+  <section class="timeline-main">
+    <div class="card timeline-mini" style="box-shadow:none;">
+      <div class="timeline-kicker">
+        <div class="pill">历史会议模拟 · 政策时间轴</div>
+        <div class="muted" style="font-size: 13px; margin-top: 8px;">用目标区间变动识别 Action，并用 Regime 色带标注政策周期。</div>
+      </div>
+      <div class="mini-head">
+        <div class="title" style="font-size:14px;">联邦基金目标利率（中值）</div>
+        <div class="muted" style="font-size:12px;">默认近5年；选中会议会高亮</div>
+      </div>
+      <div class="mini-canvas">
+        <canvas id="rate-spark"></canvas>
+      </div>
+    </div>
+
+    <div class="timeline-stage horizontal">
+      <div class="timeline-stage-title">FOMC Decision Timeline</div>
+      <div id="timeline" class="timeline horizontal"></div>
+      <div id="tooltip" class="timeline-tooltip" style="display:none;"></div>
+    </div>
+  </section>
+
+  <aside class="timeline-detail">
+    <div class="card" id="detail-card" style="box-shadow:none;">
+      <div class="title">会议详情</div>
+      <div class="muted" style="font-size: 13px; margin-top: 8px;">请选择时间轴上的节点。</div>
+    </div>
+
+    <div class="card timeline-controls" style="box-shadow:none;">
+      <div class="controls-top">
+        <div>
+          <div class="title" style="font-size: 14px;">筛选与刷新</div>
+          <div id="timeline-status" class="muted" style="font-size: 12px; margin-top: 6px;"></div>
+        </div>
+        <div class="controls-actions">
+          <button class="btn secondary" id="btn-refresh">刷新</button>
+          <a class="btn secondary" href="/api/meetings/timeline?start={{ timeline_start }}&end={{ timeline_end }}&history_cutoff={{ history_cutoff }}" target="_blank" rel="noopener noreferrer">API</a>
+        </div>
+      </div>
+
+      <div class="controls-grid">
+        <select id="mode" class="select select-small" title="历史/未来">
+          <option value="historical" selected>历史</option>
+          <option value="future">未来</option>
+          <option value="all">全部</option>
+        </select>
+
+        <select id="spark-window" class="select select-small" title="时间窗口（图像与时间轴）">
+          <option value="5Y" selected>近5年</option>
+          <option value="10Y">近10年</option>
+          <option value="ALL">全部</option>
+        </select>
+      </div>
+
+      <div class="decision-chips" id="decision-chips" style="margin-top: 10px;">
+        <button type="button" class="chip chip-btn active" data-decision="all">全部</button>
+        <button type="button" class="chip chip-btn" data-decision="HIKE">Hike</button>
+        <button type="button" class="chip chip-btn" data-decision="CUT">Cut</button>
+        <button type="button" class="chip chip-btn" data-decision="HOLD">Hold</button>
+      </div>
+
+      <input id="search" class="input" placeholder="搜索：2019 / 2019-07 / June…" style="width: 100%; margin-top: 10px;" />
+
+      <button class="btn secondary" id="btn-more" style="margin-top: 10px; width: 100%;">高级筛选</button>
+
+      <div id="more-filters" class="filter-more" style="display:none;">
+        <div class="field-row" style="gap: 10px; flex-wrap: wrap; margin-bottom: 0;">
+          <select id="year-start" class="select select-small"></select>
+          <select id="year-end" class="select select-small"></select>
+        </div>
+        <div class="year-nav" id="year-nav"></div>
+        <div class="timeline-legend" style="margin-top: 10px;">
+          <span class="legend-item"><span class="legend-dot hike"></span>HIKE</span>
+          <span class="legend-item"><span class="legend-dot cut"></span>CUT</span>
+          <span class="legend-item"><span class="legend-dot hold"></span>HOLD</span>
+          <span class="legend-sep"></span>
+          <span class="legend-item"><span class="legend-band tightening"></span>Tightening</span>
+          <span class="legend-item"><span class="legend-band easing"></span>Easing</span>
+          <span class="legend-item"><span class="legend-band holding"></span>Holding</span>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+  const params = {
+    start: "{{ timeline_start }}",
+    end: "{{ timeline_end }}",
+    history_cutoff: "{{ history_cutoff }}",
+  };
+
+  const state = {
+    mode: "historical",
+    q: "",
+    yearStart: null,
+    yearEnd: null,
+    selectedId: null,
+    decision: "all",
+    data: null,
+  };
+
+  const statusEl = document.getElementById("timeline-status");
+  const timelineEl = document.getElementById("timeline");
+  const detailEl = document.getElementById("detail-card");
+  const tooltipEl = document.getElementById("tooltip");
+  const yearNavEl = document.getElementById("year-nav");
+  const yearStartEl = document.getElementById("year-start");
+  const yearEndEl = document.getElementById("year-end");
+  const decisionChipsEl = document.getElementById("decision-chips");
+  const sparkWindowEl = document.getElementById("spark-window");
+  const sparkEl = document.getElementById("rate-spark");
+  let sparkChart = null;
+
+  const fetchTimeline = async () => {
+    statusEl.textContent = "加载中…";
+    const qs = new URLSearchParams(params).toString();
+    const resp = await fetch(`/api/meetings/timeline?${qs}`);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data?.detail || "加载失败");
+    state.data = data;
+    statusEl.textContent = `${data?.meta?.count || 0} 场会议`;
+    initYearFilters();
+    render();
+  };
+
+  const initYearFilters = () => {
+    const items = (state.data?.items || []);
+    const years = Array.from(new Set(items.map(it => (it.decision_date || it.meeting_id || "").slice(0,4)))).filter(Boolean);
+    years.sort((a,b) => Number(a)-Number(b));
+    yearStartEl.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+    yearEndEl.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join("");
+    state.yearStart = years[0] || null;
+    state.yearEnd = years[years.length-1] || null;
+    if (state.yearStart) yearStartEl.value = state.yearStart;
+    if (state.yearEnd) yearEndEl.value = state.yearEnd;
+  };
+
+  const filteredItems = () => {
+    const items = (state.data?.items || []);
+    const q = (state.q || "").toLowerCase();
+    const ys = state.yearStart ? Number(state.yearStart) : null;
+    const ye = state.yearEnd ? Number(state.yearEnd) : null;
+    const base = items.filter(it => {
+      if (state.mode === "historical" && !it.historical) return false;
+      if (state.mode === "future" && it.historical) return false;
+      const year = Number((it.decision_date || "").slice(0,4));
+      if (ys && year < ys) return false;
+      if (ye && year > ye) return false;
+      if (!q) return true;
+      return (it.title || "").toLowerCase().includes(q) ||
+             (it.meeting_id || "").toLowerCase().includes(q) ||
+             (it.decision_date || "").toLowerCase().includes(q);
+    });
+
+    // Apply window filter (5Y/10Y) to timeline too.
+    const win = (sparkWindowEl?.value || "5Y").toUpperCase();
+    if (win !== "ALL" && base.length) {
+      const years = (win === "10Y") ? 10 : 5;
+      const lastDt = new Date((base[base.length - 1].decision_date || base[base.length - 1].meeting_id || "").slice(0, 10));
+      if (isFinite(lastDt.getTime())) {
+        const start = new Date(lastDt);
+        start.setFullYear(start.getFullYear() - years);
+        const windowed = base.filter(it => {
+          const dt = new Date((it.decision_date || it.meeting_id || "").slice(0, 10));
+          return isFinite(dt.getTime()) && dt >= start && dt <= lastDt;
+        });
+        if (windowed.length) {
+          // preserve current selection if possible
+          const selectedIn = windowed.some(x => x.meeting_id === state.selectedId);
+          if (!selectedIn) state.selectedId = null;
+          return windowed.filter(it => (state.decision === "all" || String(it.decision) === String(state.decision)));
+        }
+      }
+    }
+
+    return base.filter(it => (state.decision === "all" || String(it.decision) === String(state.decision)));
+  };
+
+  const pickSparkItems = (items) => {
+    return items;
+  };
+
+  const renderSpark = (items) => {
+    if (!sparkEl || !window.Chart) return;
+    const sparkItems = pickSparkItems(items);
+    const labels = sparkItems.map(it => (it.decision_date || it.meeting_id || "").slice(0,10));
+    const mid = sparkItems.map(it => {
+      const lo = it.target_lower != null ? Number(it.target_lower) : null;
+      const hi = it.target_upper != null ? Number(it.target_upper) : null;
+      if (lo == null || hi == null) return null;
+      return (lo + hi) / 2.0;
+    });
+    const idx = sparkItems.findIndex(it => it.meeting_id === state.selectedId);
+    const marker = sparkItems.map((it, i) => (i === idx ? mid[i] : null));
+
+    const styles = getComputedStyle(document.documentElement);
+    const tick = (styles.getPropertyValue("--muted") || "").trim() || "#94a3b8";
+    const grid = "rgba(255,255,255,0.08)";
+
+    if (sparkChart) sparkChart.destroy();
+    sparkChart = new Chart(sparkEl, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          { label: "Target (mid)", data: mid, borderColor: "rgba(34,211,238,0.92)", backgroundColor: "rgba(34,211,238,0.08)", tension: 0.0, stepped: true, pointRadius: 0 },
+          { label: "Selected", data: marker, borderColor: "#f97316", backgroundColor: "#f97316", pointRadius: 3, showLine: false },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: tick } } },
+        scales: {
+          x: { ticks: { color: tick, maxTicksLimit: 8 }, grid: { color: "transparent" } },
+          y: { ticks: { color: tick }, grid: { color: grid } },
+        },
+      },
+    });
+  };
+
+  const render = () => {
+    const items = filteredItems();
+    const spacing = 92;
+    const leftPad = 36;
+    timelineEl.innerHTML = "";
+    yearNavEl.innerHTML = "";
+    // Spark should reflect the time window + mode, but not the HIKE/CUT/HOLD filter.
+    const sparkBase = (state.data?.items || []).filter(it => {
+      if (state.mode === "historical" && !it.historical) return false;
+      if (state.mode === "future" && it.historical) return false;
+      const ys = state.yearStart ? Number(state.yearStart) : null;
+      const ye = state.yearEnd ? Number(state.yearEnd) : null;
+      const year = Number((it.decision_date || "").slice(0,4));
+      if (ys && year < ys) return false;
+      if (ye && year > ye) return false;
+      return true;
+    });
+    const win = (sparkWindowEl?.value || "5Y").toUpperCase();
+    let sparkItems = sparkBase;
+    if (win !== "ALL" && sparkBase.length) {
+      const years = (win === "10Y") ? 10 : 5;
+      const last = sparkBase[sparkBase.length - 1];
+      const lastDt = new Date((last.decision_date || last.meeting_id || "").slice(0, 10));
+      if (isFinite(lastDt.getTime())) {
+        const start = new Date(lastDt);
+        start.setFullYear(start.getFullYear() - years);
+        const windowed = sparkBase.filter(it => {
+          const dt = new Date((it.decision_date || it.meeting_id || "").slice(0, 10));
+          return isFinite(dt.getTime()) && dt >= start && dt <= lastDt;
+        });
+        if (windowed.length) sparkItems = windowed;
+      }
+    }
+    renderSpark(sparkItems);
+
+    // map meeting_id -> index in filtered list
+    const indexById = {};
+    items.forEach((it, idx) => { indexById[it.meeting_id] = idx; });
+
+    // draw regime bands based on full segments, but only those intersecting filtered list
+    const segments = state.data?.regime_segments || [];
+    for (const seg of segments) {
+      const a = indexById[seg.start_meeting_id];
+      const b = indexById[seg.end_meeting_id];
+      if (a === undefined || b === undefined) continue;
+      const band = document.createElement("div");
+      band.className = `regime-band ${String(seg.regime || "").toLowerCase()}`;
+      const left = leftPad + Math.min(a, b) * spacing;
+      const width = (Math.abs(b - a) + 1) * spacing;
+      band.style.left = `${left}px`;
+      band.style.width = `${width}px`;
+      timelineEl.appendChild(band);
+    }
+
+    // axis
+    const axis = document.createElement("div");
+    axis.className = "timeline-axis";
+    axis.style.width = `${leftPad + items.length * spacing + 120}px`;
+    timelineEl.appendChild(axis);
+
+    // year ticks + nav
+    const firstIndexByYear = {};
+    items.forEach((it, idx) => {
+      const y = (it.decision_date || "").slice(0,4);
+      if (!y) return;
+      if (firstIndexByYear[y] === undefined) firstIndexByYear[y] = idx;
+    });
+    Object.keys(firstIndexByYear).sort((a,b) => Number(a)-Number(b)).forEach(y => {
+      const idx = firstIndexByYear[y];
+      const tick = document.createElement("div");
+      tick.className = "timeline-year";
+      tick.style.left = `${leftPad + idx * spacing - 8}px`;
+      tick.textContent = y;
+      timelineEl.appendChild(tick);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "year-chip";
+      btn.textContent = y;
+      btn.addEventListener("click", () => {
+        timelineEl.parentElement.scrollTo({ left: Math.max(0, idx * spacing - 160), behavior: "smooth" });
+      });
+      yearNavEl.appendChild(btn);
+    });
+
+    // nodes
+    items.forEach((it, idx) => {
+      const node = document.createElement("button");
+      node.type = "button";
+      node.className = `timeline-node ${String(it.decision || "").toLowerCase()} ${it.meeting_id === state.selectedId ? "selected" : ""}`;
+      node.style.left = `${leftPad + idx * spacing}px`;
+      const date = (it.decision_date || it.meeting_id || "").slice(0,10);
+      const action = it.decision || "HOLD";
+      const delta = (it.delta_bps ?? 0);
+      const range = it.target_range || "—";
+      const deltaText = `${delta > 0 ? "+" : ""}${delta}bp`;
+      node.innerHTML = `
+        <span class="node-dot"></span>
+        <span class="node-mini">${date.slice(0,7)}</span>
+        <span class="node-badge">${action}</span>
+        <span class="node-delta">${deltaText}</span>
+      `;
+      node.addEventListener("mouseenter", (e) => {
+        tooltipEl.style.display = "";
+        tooltipEl.innerHTML = `
+          <div class="tt-title">${it.title}</div>
+          <div class="tt-row">Date: ${date}</div>
+          <div class="tt-row">Action: ${action} (${delta > 0 ? "+" : ""}${delta}bp)</div>
+          <div class="tt-row">Range: ${range}</div>
+          <div class="tt-row">Regime: ${it.regime}</div>
+        `;
+      });
+      node.addEventListener("mousemove", (e) => {
+        const rect = timelineEl.getBoundingClientRect();
+        tooltipEl.style.left = `${e.clientX - rect.left + 16}px`;
+        tooltipEl.style.top = `${Math.max(10, e.clientY - rect.top - 92)}px`;
+      });
+      node.addEventListener("mouseleave", () => { tooltipEl.style.display = "none"; });
+      node.addEventListener("click", () => {
+        state.selectedId = it.meeting_id;
+        renderDetail(it);
+        // center in viewport for horizontal scroll
+        try {
+          const stage = timelineEl.parentElement;
+          const center = Math.max(0, idx * spacing - (stage.clientWidth / 2) + 80);
+          stage.scrollTo({ left: center, behavior: "smooth" });
+        } catch (e) {}
+        render();
+      });
+      timelineEl.appendChild(node);
+    });
+
+    // default selection
+    if (!state.selectedId && items.length) {
+      const newestHistorical = items.filter(x => x.historical).slice(-1)[0];
+      state.selectedId = (newestHistorical || items[0]).meeting_id;
+      renderDetail(newestHistorical || items[0]);
+      render();
+    }
+  };
+
+  const renderDetail = (it) => {
+    const canEnter = !!it.historical;
+      const sim = it.sim || {};
+      const simBadge = sim.has_run ? (sim.has_artifacts ? `<span class="chip live">已模拟</span>` : `<span class="chip">有缓存</span>`) : `<span class="chip disabled">未模拟</span>`;
+      const enter = canEnter
+        ? `<a class="btn" href="/history/${it.meeting_id}/overview">进入模拟流程</a>`
+        : `<span class="chip disabled">未来会议不可交互</span>`;
+      const delta = (it.delta_bps ?? 0);
+      const preRange = (it.pre_lower != null && it.pre_upper != null) ? `${Number(it.pre_lower).toFixed(2)}–${Number(it.pre_upper).toFixed(2)}` : "—";
+      const postRange = it.target_range || "—";
+      detailEl.innerHTML = `
+        <div class="title">会议详情</div>
+        <div class="calendar-detail-title">${it.title || it.meeting_id}</div>
+        <div class="chips" style="margin-top: 8px;">
+          <span class="chip">${it.decision}</span>
+          <span class="chip">${it.regime}</span>
+          ${simBadge}
+        </div>
+        <div class="muted" style="font-size: 13px; line-height: 1.7; margin-top: 10px;">
+          决议日：${(it.decision_date || "").slice(0,10)}<br/>
+          决议前：${preRange}<br/>
+          决议后：${postRange}<br/>
+          变动：${delta > 0 ? "+" : ""}${delta}bp
+        </div>
+        <div class="field-row" style="gap: 10px; flex-wrap: wrap; margin-top: 12px;">
+          ${enter}
+          <a class="btn secondary" href="/toolbox">打开工具箱</a>
+        </div>
+        <div class="muted" style="font-size: 12px; margin-top: 10px;">
+          Flow：宏观事件 → NFP → CPI → 规则模型 →（讨论/决议/纪要待上线）
+        </div>
+      `;
+    };
+
+  document.getElementById("mode")?.addEventListener("change", (e) => { state.mode = e.target.value; state.selectedId = null; render(); });
+  document.getElementById("search")?.addEventListener("input", (e) => { state.q = e.target.value || ""; state.selectedId = null; render(); });
+  yearStartEl?.addEventListener("change", (e) => { state.yearStart = e.target.value; state.selectedId = null; render(); });
+  yearEndEl?.addEventListener("change", (e) => { state.yearEnd = e.target.value; state.selectedId = null; render(); });
+  sparkWindowEl?.addEventListener("change", () => { render(); });
+
+  decisionChipsEl?.querySelectorAll("button[data-decision]")?.forEach(btn => {
+    btn.addEventListener("click", () => {
+      decisionChipsEl.querySelectorAll(".chip-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      state.decision = btn.dataset.decision || "all";
+      state.selectedId = null;
+      render();
+    });
+  });
+
+  document.getElementById("btn-more")?.addEventListener("click", () => {
+    const box = document.getElementById("more-filters");
+    if (!box) return;
+    box.style.display = box.style.display === "none" ? "" : "none";
+  });
+
+  document.getElementById("btn-refresh")?.addEventListener("click", async () => {
+    try {
+      params.refresh_calendar = "true";
+      await fetchTimeline();
+      delete params.refresh_calendar;
+    } catch (e) {
+      statusEl.textContent = `错误：${e.message || e}`;
+    }
+  });
+
+  fetchTimeline().catch((e) => { statusEl.textContent = `错误：${e.message || e}`; });
+</script>
+{% endblock %}

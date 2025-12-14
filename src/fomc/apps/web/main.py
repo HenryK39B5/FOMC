@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import json
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
@@ -15,6 +16,19 @@ from .backend import (
     export_cpi_pdf,
     export_macro_pdf,
     export_labor_pdf,
+    list_fomc_meetings,
+    get_fomc_meeting,
+    get_or_create_meeting_run,
+    get_meeting_run,
+    get_meeting_context,
+    ensure_meeting_macro_md,
+    ensure_meeting_labor_md,
+    ensure_meeting_cpi_md,
+    ensure_meeting_taylor_md,
+    ensure_meeting_materials_all,
+    get_meeting_material_cached,
+    start_meeting_material_job,
+    meetings_timeline,
     list_macro_months,
     refresh_macro_month,
     get_macro_month,
@@ -57,9 +71,126 @@ def landing(request: Request) -> HTMLResponse:
 
 @app.get("/toolbox", response_class=HTMLResponse)
 def toolbox_page(request: Request) -> HTMLResponse:
+    embed = str(request.query_params.get("embed") or "").strip() in {"1", "true", "yes"}
     return TEMPLATES.TemplateResponse(
         "toolbox.html",
-        {"request": request, "default_month": _default_month()},
+        {"request": request, "default_month": _default_month(), "embed": embed},
+    )
+
+
+@app.get("/history", response_class=HTMLResponse)
+def history_page(request: Request) -> HTMLResponse:
+    return TEMPLATES.TemplateResponse(
+        "history.html",
+        {
+            "request": request,
+            "timeline_start": "2010-01-01",
+            "timeline_end": "2027-12-31",
+            "history_cutoff": "2025-12-31",
+        },
+    )
+
+
+@app.get("/history/{meeting_id}", response_class=HTMLResponse)
+def history_meeting_page(request: Request, meeting_id: str) -> HTMLResponse:
+    try:
+        meeting = get_fomc_meeting(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return RedirectResponse(url=f"/history/{meeting_id}/overview", status_code=307)
+
+
+@app.get("/history/{meeting_id}/overview", response_class=HTMLResponse)
+def history_meeting_overview_page(request: Request, meeting_id: str) -> HTMLResponse:
+    try:
+        meeting = get_fomc_meeting(meeting_id)
+        context = get_meeting_context(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return TEMPLATES.TemplateResponse("history_overview.html", {"request": request, "meeting": meeting, "context": context})
+
+
+@app.get("/history/{meeting_id}/{step}", response_class=HTMLResponse)
+def history_meeting_step_page(request: Request, meeting_id: str, step: str) -> HTMLResponse:
+    if step == "macro":
+        return RedirectResponse(url=f"/history/{meeting_id}/macro/events", status_code=307)
+
+    step_map = {
+        "nfp": {"title": "非农就业研报（NFP）", "kind": "nfp", "toolbox_tab": "pane-labor", "template": "history_nfp.html"},
+        "cpi": {"title": "CPI 研报", "kind": "cpi", "toolbox_tab": "pane-cpi", "template": "history_cpi.html"},
+        "model": {"title": "政策规则（Taylor）", "kind": "taylor", "toolbox_tab": "pane-models", "template": "history_model.html"},
+    }
+    if step not in step_map:
+        raise HTTPException(status_code=404, detail="Unknown step")
+
+    try:
+        meeting = get_fomc_meeting(meeting_id)
+        context = get_meeting_context(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    focus_month = None
+    try:
+        months = context.get("report_months") or []
+        focus_month = months[-1] if months else None
+    except Exception:
+        focus_month = None
+
+    step_info = step_map[step]
+    return TEMPLATES.TemplateResponse(
+        step_info["template"],
+        {
+            "request": request,
+            "meeting": meeting,
+            "context": context,
+            "focus_month": focus_month,
+            "step": step,
+            "step_info": step_info,
+        },
+    )
+
+
+@app.get("/history/{meeting_id}/macro/events", response_class=HTMLResponse)
+def history_macro_events_page(request: Request, meeting_id: str) -> HTMLResponse:
+    try:
+        meeting = get_fomc_meeting(meeting_id)
+        context = get_meeting_context(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    focus_month = (context.get("report_months") or [None])[-1]
+    return TEMPLATES.TemplateResponse(
+        "history_macro_events.html",
+        {
+            "request": request,
+            "meeting": meeting,
+            "context": context,
+            "focus_month": focus_month,
+            "step": "macro",
+            "step_info": {"title": "宏观事件", "kind": "macro", "toolbox_tab": "pane-macro"},
+        },
+    )
+
+
+@app.get("/history/{meeting_id}/macro/report", response_class=HTMLResponse)
+def history_macro_report_page(request: Request, meeting_id: str) -> HTMLResponse:
+    try:
+        meeting = get_fomc_meeting(meeting_id)
+        context = get_meeting_context(meeting_id)
+    except PortalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    focus_month = (context.get("report_months") or [None])[-1]
+    return TEMPLATES.TemplateResponse(
+        "history_macro_report.html",
+        {
+            "request": request,
+            "meeting": meeting,
+            "context": context,
+            "focus_month": focus_month,
+            "step": "macro",
+            "step_info": {"title": "宏观事件", "kind": "macro", "toolbox_tab": "pane-macro"},
+        },
     )
 
 
@@ -106,6 +237,129 @@ def api_macro_months(order: str = Query("desc")):
         return list_macro_months(order=order)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/meetings")
+def api_meetings(refresh: bool = False):
+    try:
+        return list_fomc_meetings(refresh=refresh)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/meetings/timeline")
+def api_meetings_timeline(
+    start: str = "2010-01-01",
+    end: str = "2027-12-31",
+    history_cutoff: str = "2025-12-31",
+    refresh_calendar: bool = False,
+    k: int = 2,
+    m_hold: int = 3,
+    delta_threshold_bps: float = 1.0,
+):
+    from datetime import date as _date
+
+    try:
+        return meetings_timeline(
+            start=_date.fromisoformat(start),
+            end=_date.fromisoformat(end),
+            history_cutoff=_date.fromisoformat(history_cutoff),
+            refresh_calendar=bool(refresh_calendar),
+            k=int(k),
+            m_hold=int(m_hold),
+            delta_threshold_bps=float(delta_threshold_bps),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/meetings/{meeting_id}")
+def api_meeting(meeting_id: str, refresh: bool = False):
+    try:
+        return get_fomc_meeting(meeting_id, refresh=refresh)
+    except PortalError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/history/{meeting_id}/context")
+def api_history_context(meeting_id: str, refresh_calendar: bool = False):
+    try:
+        return get_meeting_context(meeting_id, refresh_calendar=refresh_calendar)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/history/{meeting_id}/run")
+def api_history_run(meeting_id: str, refresh_calendar: bool = False):
+    try:
+        return get_or_create_meeting_run(meeting_id, refresh_calendar=refresh_calendar)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/history/{meeting_id}/materials/{kind}")
+def api_history_material_cached(meeting_id: str, kind: str):
+    kind_map = {"labor": "nfp", "nfp": "nfp", "cpi": "cpi", "macro": "macro", "taylor": "taylor"}
+    normalized = kind_map.get(kind.lower())
+    if not normalized:
+        raise HTTPException(status_code=404, detail="Unknown material kind")
+    try:
+        return get_meeting_material_cached(meeting_id, normalized)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/history/{meeting_id}/materials/{kind}")
+def api_history_material_generate(meeting_id: str, kind: str, refresh: bool = False):
+    kind_map = {"labor": "nfp", "nfp": "nfp", "cpi": "cpi", "macro": "macro", "taylor": "taylor", "all": "all"}
+    normalized = kind_map.get(kind.lower())
+    if not normalized:
+        raise HTTPException(status_code=404, detail="Unknown material kind")
+    try:
+        if normalized == "macro":
+            return ensure_meeting_macro_md(meeting_id, refresh=refresh)
+        if normalized == "nfp":
+            return ensure_meeting_labor_md(meeting_id, refresh=refresh)
+        if normalized == "cpi":
+            return ensure_meeting_cpi_md(meeting_id, refresh=refresh)
+        if normalized == "taylor":
+            return ensure_meeting_taylor_md(meeting_id, refresh=refresh)
+        if normalized == "all":
+            return ensure_meeting_materials_all(meeting_id, refresh=refresh)
+        raise HTTPException(status_code=404, detail="Unknown material kind")
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/history/{meeting_id}/jobs/materials/{kind}")
+def api_history_material_job(meeting_id: str, kind: str, refresh: bool = False):
+    kind_map = {"labor": "nfp", "nfp": "nfp", "cpi": "cpi", "macro": "macro", "taylor": "taylor", "all": "all"}
+    normalized = kind_map.get(kind.lower())
+    if not normalized:
+        raise HTTPException(status_code=404, detail="Unknown material kind")
+    try:
+        return start_meeting_material_job(meeting_id=meeting_id, kind=normalized, refresh=refresh)
+    except PortalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/jobs/{job_id}")
+def api_job(job_id: str):
+    job = get_db_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @app.post("/api/macro-events/refresh")

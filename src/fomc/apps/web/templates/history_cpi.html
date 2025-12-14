@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flow-shell">
+  {% include "history_shared_sidebar.html" %}
+
+  <section class="flow-main">
+    <div class="card">
+      <div class="field-row" style="flex-wrap: wrap;">
+        <div>
+          <div class="pill">CPI · 单月研报</div>
+          <div class="muted" style="font-size: 13px; margin-top: 8px;">
+            会议窗口可能覆盖 1-2 个月：这里按月查看与生成（默认优先读取已生成的研报文本）。
+          </div>
+        </div>
+        <div style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+          <select id="month" class="select">
+            {% for m in context.report_months %}
+              <option value="{{ m }}" {% if m == focus_month %}selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+          <button class="btn" id="btn-load" type="button">生成/更新</button>
+          <button class="btn secondary" id="btn-pdf" type="button">导出PDF</button>
+        </div>
+      </div>
+      <div id="status" class="muted" style="font-size: 13px; margin-top: 10px;"></div>
+    </div>
+
+    <div id="result" style="margin-top: 14px;"></div>
+
+    <div class="flow-nav">
+      <a class="btn secondary" href="/history/{{ meeting.meeting_id }}/nfp">上一步：非农研报</a>
+      <a class="btn" href="/history/{{ meeting.meeting_id }}/model">下一步：规则模型</a>
+    </div>
+  </section>
+</div>
+
+<script src="/static/report_render.js"></script>
+<script>
+  (() => {
+    const monthEl = document.getElementById("month");
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const btn = document.getElementById("btn-load");
+
+    const escapeHtml = (str) =>
+      (str || "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch] || ch));
+
+    const load = async () => {
+      const month = monthEl?.value;
+      if (!month) return;
+      statusEl.textContent = "加载研报数据…";
+      resultEl.innerHTML = "";
+      if (btn) btn.disabled = true;
+      try {
+        const resp = await fetch(`/api/reports/cpi?month=${encodeURIComponent(month)}`);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) throw new Error(data.detail || data.error || "加载失败");
+        if (!window.FomcReportRender?.renderCpi) throw new Error("report_render.js 未加载");
+        window.FomcReportRender.renderCpi(resultEl, data);
+        statusEl.textContent = `${month} · 已加载`;
+      } catch (e) {
+        statusEl.textContent = `错误：${e.message || e}`;
+        resultEl.innerHTML = `<div class="card"><div class="muted">${escapeHtml(e.message || String(e))}</div></div>`;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    };
+
+    document.getElementById("btn-load")?.addEventListener("click", load);
+    document.getElementById("btn-pdf")?.addEventListener("click", () => {
+      const month = monthEl?.value;
+      if (!month) return;
+      window.open(`/api/reports/cpi.pdf?month=${encodeURIComponent(month)}`, "_blank");
+    });
+    monthEl?.addEventListener("change", load);
+
+    load();
+  })();
+</script>
+{% endblock %}
+
