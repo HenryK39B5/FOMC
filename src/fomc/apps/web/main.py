@@ -56,7 +56,7 @@ load_env()
 APP_DIR = Path(__file__).resolve().parent
 TEMPLATES = Jinja2Templates(directory=str(APP_DIR / "templates"))
 
-app = FastAPI(title="FOMC Portal", docs_url=None, redoc_url=None)
+app = FastAPI(title="FOMC Studio", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 
 

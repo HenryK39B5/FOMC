@@ -1,4 +1,4 @@
-# FOMC Portal（联邦公开市场委员会 · 学习/模拟/工具）
+# FOMC Studio（联邦公开市场委员会 · 学习/模拟/工具）
 
 这个项目用同一套底层能力，提供三种入口，帮助用户理解并复现 FOMC 的决策骨架：
 
@@ -8,6 +8,32 @@
 
 愿景、体验骨架与路线图：`docs/PROJECT_COMPASS.md`  
 技术实现说明（TechDocs）：`/techdocs`（内容在 `content/techdocs/`）
+
+## 页面示例图（Screenshots）
+
+### 主页
+<img src="docs/assets/screenshots/homepage.png" alt="主页" width="900" />
+
+### 美联储101
+<img src="docs/assets/screenshots/fed101.png" alt="Fed101" width="900" />
+
+### 历史会议模拟
+<img src="docs/assets/screenshots/history.png" alt="历史会议模拟" width="900" />
+
+### 宏观事件数据（部分）
+<img src="docs/assets/screenshots/macro_events.png" alt="宏观事件数据" width="900" />
+
+### 宏观经济指标浏览器（部分）
+<img src="docs/assets/screenshots/indicators.png" alt="宏观经济指标浏览器" width="900" />
+
+### 非农就业研报（部分）
+<img src="docs/assets/screenshots/nfp.png" alt="非农研报" width="900" />
+
+### CPI 研报（部分）
+<img src="docs/assets/screenshots/cpi.png" alt="CPI 研报" width="900" />
+
+### 规则模型
+<img src="docs/assets/screenshots/rules.png" alt="规则模型" width="900" />
 
 ## 你能做什么
 
