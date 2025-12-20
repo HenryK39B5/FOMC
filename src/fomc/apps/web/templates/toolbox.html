@@ -15,6 +15,7 @@
     <div class="field-row">
       <input id="labor-month" type="month" value="{{ default_month }}">
       <button class="btn" id="btn-labor">生成</button>
+      <button class="btn secondary" id="btn-labor-refresh">刷新</button>
       <button class="btn secondary" id="btn-labor-pdf">导出PDF</button>
     </div>
     <div id="labor-status" class="muted"></div>
@@ -26,6 +27,7 @@
     <div class="field-row">
       <input id="cpi-month" type="month" value="{{ default_month }}">
       <button class="btn" id="btn-cpi">生成</button>
+      <button class="btn secondary" id="btn-cpi-refresh">刷新</button>
       <button class="btn secondary" id="btn-cpi-pdf">导出PDF</button>
     </div>
     <div id="cpi-status" class="muted"></div>
@@ -471,11 +473,11 @@
     2: "表2：当月季调CPI分项环比结构",
   };
 
-  // 非农
-  document.getElementById("btn-labor").addEventListener("click", () => {
+  const loadLaborReport = (refresh = false) => {
     const month = document.getElementById("labor-month").value;
     const resultEl = document.getElementById("labor-result");
-    callApi(`/api/reports/labor?month=${month}`, document.getElementById("labor-status"), resultEl, (data, el) => {
+    const refreshParam = refresh ? "&refresh=true" : "";
+    callApi(`/api/reports/labor?month=${month}${refreshParam}`, document.getElementById("labor-status"), resultEl, (data, el) => {
       const insight = summarizeIndicators(data.indicators || []);
       const markdown = data.report_text || buildLaborFallbackText(data);
       const reportHtml = renderMarkdownLite(markdown);
@@ -498,17 +500,21 @@
         laborTitles
       );
     });
-  });
+  };
+
+  // 非农
+  document.getElementById("btn-labor").addEventListener("click", () => loadLaborReport(false));
+  document.getElementById("btn-labor-refresh").addEventListener("click", () => loadLaborReport(true));
   document.getElementById("btn-labor-pdf").addEventListener("click", () => {
     const month = document.getElementById("labor-month").value;
     window.open(`/api/reports/labor.pdf?month=${month}`, "_blank");
   });
 
-  // CPI
-  document.getElementById("btn-cpi").addEventListener("click", () => {
+  const loadCpiReport = (refresh = false) => {
     const month = document.getElementById("cpi-month").value;
     const resultEl = document.getElementById("cpi-result");
-    callApi(`/api/reports/cpi?month=${month}`, document.getElementById("cpi-status"), resultEl, (data, el) => {
+    const refreshParam = refresh ? "&refresh=true" : "";
+    callApi(`/api/reports/cpi?month=${month}${refreshParam}`, document.getElementById("cpi-status"), resultEl, (data, el) => {
       const insight = summarizeIndicators(data.indicators || []);
       const markdown = data.report_text || buildCpiFallbackText(data);
       const reportHtml = renderMarkdownLite(markdown);
@@ -532,7 +538,11 @@
       insertChartsIntoReport(cpiContainer, buildCpiCharts(data), cpiTitles);
       insertTablesIntoReport(cpiContainer, tables, cpiTableTitles);
     });
-  });
+  };
+
+  // CPI
+  document.getElementById("btn-cpi").addEventListener("click", () => loadCpiReport(false));
+  document.getElementById("btn-cpi-refresh").addEventListener("click", () => loadCpiReport(true));
   document.getElementById("btn-cpi-pdf").addEventListener("click", () => {
     const month = document.getElementById("cpi-month").value;
     window.open(`/api/reports/cpi.pdf?month=${month}`, "_blank");

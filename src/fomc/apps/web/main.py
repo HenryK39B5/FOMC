@@ -292,17 +292,23 @@ def redirect_macro_events():
 
 
 @app.get("/api/reports/labor")
-def api_labor_report(month: str = Query(..., regex=r"^\d{4}-\d{2}$")):
+def api_labor_report(
+    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    refresh: bool = False,
+):
     try:
-        return generate_labor_report(month)
+        return generate_labor_report(month, refresh=refresh)
     except PortalError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/reports/cpi")
-def api_cpi_report(month: str = Query(..., regex=r"^\d{4}-\d{2}$")):
+def api_cpi_report(
+    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    refresh: bool = False,
+):
     try:
-        return generate_cpi_report(month)
+        return generate_cpi_report(month, refresh=refresh)
     except PortalError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -514,9 +520,12 @@ def api_macro_pdf(
 
 
 @app.get("/api/reports/labor.pdf")
-def api_labor_pdf(month: str = Query(..., regex=r"^\d{4}-\d{2}$")):
+def api_labor_pdf(
+    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    refresh: bool = False,
+):
     try:
-        pdf_bytes, headers = export_labor_pdf(month)
+        pdf_bytes, headers = export_labor_pdf(month, refresh=refresh)
         return StreamingResponse(
             iter([pdf_bytes]),
             media_type="application/pdf",
@@ -529,9 +538,12 @@ def api_labor_pdf(month: str = Query(..., regex=r"^\d{4}-\d{2}$")):
 
 
 @app.get("/api/reports/cpi.pdf")
-def api_cpi_pdf(month: str = Query(..., regex=r"^\d{4}-\d{2}$")):
+def api_cpi_pdf(
+    month: str = Query(..., regex=r"^\d{4}-\d{2}$"),
+    refresh: bool = False,
+):
     try:
-        pdf_bytes, headers = export_cpi_pdf(month)
+        pdf_bytes, headers = export_cpi_pdf(month, refresh=refresh)
         return StreamingResponse(
             iter([pdf_bytes]),
             media_type="application/pdf",

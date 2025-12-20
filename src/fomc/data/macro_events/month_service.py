@@ -170,7 +170,7 @@ def ensure_month_events(
 
         monthly_summary = None
         if generate_monthly_summary and use_llm and selected_events:
-            monthly_summary = generate_monthly_report(selected_events, model=llm_model)
+            monthly_summary = generate_monthly_report(selected_events, model=llm_model, report_month=month_key)
 
         now_iso = datetime.now(timezone.utc).isoformat()
         upsert_month_record(

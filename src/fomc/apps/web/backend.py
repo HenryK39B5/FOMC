@@ -918,25 +918,31 @@ def _render_markdown(md_text: str | None) -> str | None:
     return markdown2.markdown(md_text, extras=["autolink", "break-on-newline", "fenced-code-blocks"])
 
 
-def generate_labor_report(month: str) -> Dict[str, Any]:
+def generate_labor_report(month: str, refresh: bool = False) -> Dict[str, Any]:
     """Generate labor-market report payload via the existing Flask app."""
-    return _call_flask_json("/api/labor-market/report", {"report_month": month})
+    payload = {"report_month": month}
+    if refresh:
+        payload["refresh_llm"] = True
+    return _call_flask_json("/api/labor-market/report", payload)
 
 
-def generate_cpi_report(month: str) -> Dict[str, Any]:
+def generate_cpi_report(month: str, refresh: bool = False) -> Dict[str, Any]:
     """Generate CPI report payload via the existing Flask app."""
-    return _call_flask_json("/api/cpi/report", {"report_month": month})
+    payload = {"report_month": month}
+    if refresh:
+        payload["refresh_llm"] = True
+    return _call_flask_json("/api/cpi/report", payload)
 
 
-def export_labor_pdf(month: str) -> tuple[bytes, Dict[str, str]]:
+def export_labor_pdf(month: str, refresh: bool = False) -> tuple[bytes, Dict[str, str]]:
     """Generate labor report PDF via Flask."""
-    report = generate_labor_report(month)
+    report = generate_labor_report(month, refresh=refresh)
     return _call_flask_pdf("/api/labor-market/report.pdf", {"report_data": report})
 
 
-def export_cpi_pdf(month: str) -> tuple[bytes, Dict[str, str]]:
+def export_cpi_pdf(month: str, refresh: bool = False) -> tuple[bytes, Dict[str, str]]:
     """Generate CPI report PDF via Flask."""
-    report = generate_cpi_report(month)
+    report = generate_cpi_report(month, refresh=refresh)
     return _call_flask_pdf("/api/cpi/report.pdf", {"report_data": report})
 
 

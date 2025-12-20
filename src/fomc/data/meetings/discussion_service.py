@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 import re
+from string import Template
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
+from fomc.config.paths import PROMPT_RUNS_DIR, REPO_ROOT
 from fomc.infra.llm import LLMClient
 
 
@@ -63,6 +66,105 @@ class RoleProfile:
     style: str
 
 
+PROMPT_DIR = REPO_ROOT / "content" / "prompts" / "meetings"
+
+
+def _parse_front_matter(raw: str) -> tuple[dict, str]:
+    if not raw.startswith("---\n"):
+        return {}, raw
+    marker = "\n---\n"
+    end = raw.find(marker, 4)
+    if end == -1:
+        return {}, raw
+    header = raw[4:end].splitlines()
+    body = raw[end + len(marker) :]
+    meta: dict = {}
+    i = 0
+    while i < len(header):
+        line = header[i].rstrip()
+        if not line or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        if ":" not in line:
+            i += 1
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value == "|":
+            i += 1
+            block_lines = []
+            while i < len(header):
+                raw_line = header[i]
+                if raw_line.startswith("  "):
+                    block_lines.append(raw_line[2:])
+                    i += 1
+                    continue
+                break
+            meta[key] = "\n".join(block_lines).strip()
+            continue
+        meta[key] = value
+        i += 1
+    return meta, body
+
+
+def _load_prompt_template(filename: str) -> tuple[str, str, str, str]:
+    path = PROMPT_DIR / filename
+    raw = path.read_text(encoding="utf-8")
+    meta, template = _parse_front_matter(raw)
+    prompt_id = meta.get("prompt_id") or path.stem
+    prompt_version = meta.get("prompt_version") or "unknown"
+    system_prompt = meta.get("system_prompt") or ""
+    return prompt_id, prompt_version, system_prompt, template.strip()
+
+
+def _render_template(template: str, context: dict) -> str:
+    return Template(template).safe_substitute(**context).strip()
+
+
+def _log_prompt_run(
+    *,
+    meeting_id: str,
+    prompt_id: str,
+    prompt_version: str,
+    agent_role: str,
+    prompt_source: str,
+    system_prompt: str,
+    user_prompt: str,
+    output_text: str,
+    model: str,
+    temperature: float,
+    max_tokens: int,
+) -> None:
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    safe_meeting_id = meeting_id.replace("/", "-").replace(" ", "_").replace(":", "-")
+    run_dir = PROMPT_RUNS_DIR / "meetings"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_filename = f"{safe_meeting_id}.jsonl"
+    log_path = run_dir / log_filename
+    meta = {
+        "report_type": "meeting",
+        "meeting_id": meeting_id,
+        "prompt_id": prompt_id,
+        "prompt_version": prompt_version,
+        "agent_role": agent_role,
+        "prompt_source": prompt_source,
+        "model": model,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "timestamp": stamp,
+        "log_file": log_filename,
+        "prompt_chars": len(user_prompt),
+        "output_chars": len(output_text),
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "output_text": output_text,
+    }
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(meta, ensure_ascii=False))
+        handle.write("\n")
+
+
 DEFAULT_ROLES: list[RoleProfile] = [
     RoleProfile(
         role="centrist",
@@ -104,40 +206,45 @@ def build_blackboard(
     cpi = (source_materials.get("cpi") or "").strip()
     taylor = (source_materials.get("taylor") or "").strip()
 
-    prompt = (
-        "你是“FOMC 历史会议模拟”的会议材料编辑。你将收到四份材料（宏观事件、劳动力、通胀、规则模型）。\n"
-        "请严格基于材料内容抽取一个“共享黑板 blackboard”，供后续委员讨论引用。\n\n"
-        "强约束（必须遵守）：\n"
-        "1) 只能从材料里抽取或改写为更短的事实，不得引入材料之外的新事实/数值；\n"
-        "2) facts 要短句化、可引用、可追溯（每条必须注明 source=macro|nfp|cpi|taylor）；\n"
-        "3) uncertainties 是对材料中明确提到或暗示的关键不确定性/风险点，不得胡编；\n"
-        "4) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        f"会议：{meeting_id}\n"
-        f"facts 数量上限：{max_facts}\n"
-        f"uncertainties 数量上限：{max_uncertainties}\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "facts": [{"text": "...", "source": "macro|nfp|cpi|taylor"}],\n'
-        '  "uncertainties": [{"text": "..."}],\n'
-        '  "policy_menu": [{"key": "cut_25|hold|hike_25", "delta_bps": -25|0|25, "label": "..."}],\n'
-        '  "draft_statement_slots": [{"key": "economic_activity|labor|inflation|financial_conditions|risks|policy_decision|forward_guidance|balance_sheet", "guidance": "..."}]\n'
-        "}\n\n"
-        "材料（可能较长，请抽取核心）：\n"
-        f"[macro]\n{macro[:12000]}\n\n"
-        f"[nfp]\n{nfp[:12000]}\n\n"
-        f"[cpi]\n{cpi[:12000]}\n\n"
-        f"[taylor]\n{taylor[:6000]}\n"
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_blackboard.md")
+    prompt = _render_template(
+        template,
+        {
+            "meeting_id": meeting_id,
+            "max_facts": max_facts,
+            "max_uncertainties": max_uncertainties,
+            "macro": macro[:12000],
+            "nfp": nfp[:12000],
+            "cpi": cpi[:12000],
+            "taylor": taylor[:6000],
+        },
     )
 
     raw = llm.chat(
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
         max_tokens=1800,
     )
     obj = _extract_json_object(raw)
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="blackboard",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=raw,
+            model=llm.config.model,
+            temperature=0.2,
+            max_tokens=1800,
+        )
+    except Exception:
+        pass
 
     facts_in = _ensure_list(obj.get("facts"))
     uncertainties_in = _ensure_list(obj.get("uncertainties"))
@@ -279,39 +386,44 @@ def generate_stance_card(
 ) -> Dict[str, Any]:
     llm = llm or LLMClient()
     allowed = [-25, 0, 25] + ([-50, 50] if crisis_mode else [])
-    prompt = (
-        f"你是 FOMC 委员，角色设定：{role.display_name}。\n"
-        f"偏好/立场：{role.bias}\n"
-        f"表达风格：{role.style}\n\n"
-        "请阅读 blackboard，并在私有通道写一张“立场卡 stance_card”。\n\n"
-        "硬约束：\n"
-        "1) 只能引用 blackboard.facts / blackboard.uncertainties（用编号），不得引入新事实/数值；\n"
-        f"2) 投票只能在 allowed_vote_deltas_bps={allowed} 中选择；\n"
-        "3) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "role": "centrist|hawk|dove",\n'
-        '  "preferred_delta_bps": -25|0|25,\n'
-        '  "top_reasons": [{"fact_id": "F01", "reason": "..."}],\n'
-        '  "key_risks": [{"uncertainty_id": "U01", "risk": "..."}],\n'
-        '  "acceptable_compromises": ["..."],\n'
-        '  "questions_to_ask": ["...","..."],\n'
-        '  "one_sentence_position": "..." \n'
-        "}\n\n"
-        "blackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_stance_card.md")
+    prompt = _render_template(
+        template,
+        {
+            "role_display_name": role.display_name,
+            "role_bias": role.bias,
+            "role_style": role.style,
+            "allowed_vote_deltas_bps": json.dumps(allowed, ensure_ascii=False),
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+        },
     )
 
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.25,
         max_tokens=1200,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="stance_card",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.25,
+            max_tokens=1200,
+        )
+    except Exception:
+        pass
     obj["role"] = role.role
     delta = _to_int(obj.get("preferred_delta_bps"))
     if delta not in allowed:
@@ -344,38 +456,45 @@ def generate_public_speech(
             "\n主持人给你的问题（你必须只回答这个问题）：\n"
             f"{chair_question}\n"
         )
-    prompt = (
-        f"你是 FOMC 委员，角色：{role.display_name}（{role.role}）。\n"
-        f"当前阶段：{phase_name}\n"
-        + question_clause
-        + "\n硬约束：\n"
-        "1) 公开发言必须只基于 blackboard.facts / blackboard.uncertainties（用编号引用），不得引入新事实；\n"
-        "2) 发言要像逐字记录：第一人称、克制口语化、信息密度高；\n"
-        "3) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "role": "centrist|hawk|dove",\n'
-        '  "speech_md": "Markdown 段落（不含标题）",\n'
-        '  "cited_facts": ["F01","F02"],\n'
-        '  "cited_uncertainties": ["U01"],\n'
-        '  "ask_one_question": "（若是开场陈述则必须给出一个定向问题；若是回答主持人问题可留空）"\n'
-        "}\n\n"
-        "blackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\nstance_card（供你保持一致立场）：\n"
-        + json.dumps(stance_card, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_public_speech.md")
+    prompt = _render_template(
+        template,
+        {
+            "role_display_name": role.display_name,
+            "role_role": role.role,
+            "phase_name": phase_name,
+            "question_clause": question_clause,
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "stance_card_json": json.dumps(stance_card, ensure_ascii=False),
+        },
     )
 
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.35,
         max_tokens=900,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="public_speech",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.35,
+            max_tokens=900,
+        )
+    except Exception:
+        pass
     obj["role"] = role.role
     cited_facts = [str(x) for x in _ensure_list(obj.get("cited_facts"))]
     cited_unc = [str(x) for x in _ensure_list(obj.get("cited_uncertainties"))]
@@ -395,36 +514,42 @@ def chair_select_questions(
     max_questions: int = 6,
 ) -> Dict[str, Any]:
     llm = llm or LLMClient()
-    prompt = (
-        "你是 FOMC 主持人（Chair/Moderator）。\n"
-        "请基于 stance_cards 与 open_questions，选择 3-6 个最关键分歧点进行定向质询。\n\n"
-        "硬约束：\n"
-        "1) 只能引用 blackboard 的事实编号来组织追问；不得引入新事实；\n"
-        "2) 每个追问必须点名一个目标委员（centrist/hawk/dove），并且问题要具体可回答；\n"
-        "3) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        f"max_questions={max_questions}\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "chair_preface_md": "一小段控场文字（不含标题）",\n'
-        '  "directed_questions": [{"to_role": "centrist|hawk|dove", "question": "..."}]\n'
-        "}\n\n"
-        "blackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\nstance_cards:\n"
-        + json.dumps(stance_cards, ensure_ascii=False)
-        + "\n\nopen_questions:\n"
-        + json.dumps(open_questions[:12], ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_chair_questions.md")
+    prompt = _render_template(
+        template,
+        {
+            "max_questions": max_questions,
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "stance_cards_json": json.dumps(stance_cards, ensure_ascii=False),
+            "open_questions_json": json.dumps(open_questions[:12], ensure_ascii=False),
+        },
     )
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.25,
         max_tokens=900,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="chair_questions",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.25,
+            max_tokens=900,
+        )
+    except Exception:
+        pass
 
     dq = []
     for it in _ensure_list(obj.get("directed_questions"))[:max_questions]:
@@ -455,34 +580,40 @@ def chair_propose_packages(
     llm: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
     llm = llm or LLMClient()
-    prompt = (
-        "你是 FOMC 主持人（Chair/Moderator）。\n"
-        "请基于 blackboard 与各委员立场，提出 2-3 个“可投政策包”。\n"
-        "每个政策包至少包括：利率决策（delta_bps），政策倾向（偏鹰/偏鸽/中性），以及一句简短指引措辞（中文）。\n\n"
-        "硬约束：\n"
-        "1) 利率决策 delta_bps 必须属于 blackboard.policy_menu 的 delta_bps；\n"
-        "2) 不得引入 blackboard 之外的新事实/数值；\n"
-        "3) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "chair_transition_md": "一小段过渡控场文字（不含标题）",\n'
-        '  "packages": [{"key": "A", "delta_bps": -25|0|25, "stance": "hawkish|neutral|dovish", "guidance": "..."}]\n'
-        "}\n\n"
-        "blackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\nstance_cards:\n"
-        + json.dumps(stance_cards, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_chair_packages.md")
+    prompt = _render_template(
+        template,
+        {
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "stance_cards_json": json.dumps(stance_cards, ensure_ascii=False),
+        },
     )
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
         max_tokens=900,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="chair_packages",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.2,
+            max_tokens=900,
+        )
+    except Exception:
+        pass
     allowed = {int(it.get("delta_bps")) for it in (blackboard.get("policy_menu") or []) if isinstance(it, dict) and _to_int(it.get("delta_bps")) is not None}
     pkgs = []
     for it in _ensure_list(obj.get("packages"))[:3]:
@@ -512,34 +643,43 @@ def generate_package_preference(
     llm: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
     llm = llm or LLMClient()
-    prompt = (
-        f"你是 FOMC 委员 {role.display_name}（{role.role}）。\n"
-        "主持人提出了若干政策包，请你对每个政策包给出：support/acceptable/oppose，并用一句话说明理由（必须引用 facts 编号）。\n\n"
-        "硬约束：\n"
-        "1) 只能引用 blackboard.facts（用编号），不得引入新事实；\n"
-        "2) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "role": "centrist|hawk|dove",\n'
-        '  "package_views": [{"package_key": "A", "view": "support|acceptable|oppose", "because": "...", "cited_facts": ["F01","F02"]}]\n'
-        "}\n\n"
-        "packages:\n"
-        + json.dumps(packages, ensure_ascii=False)
-        + "\n\nblackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\nstance_card:\n"
-        + json.dumps(stance_card, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_package_preference.md")
+    prompt = _render_template(
+        template,
+        {
+            "role_display_name": role.display_name,
+            "role_role": role.role,
+            "packages_json": json.dumps(packages, ensure_ascii=False),
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "stance_card_json": json.dumps(stance_card, ensure_ascii=False),
+        },
     )
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.25,
         max_tokens=900,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="package_preference",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.25,
+            max_tokens=900,
+        )
+    except Exception:
+        pass
     obj["role"] = role.role
     views = []
     for it in _ensure_list(obj.get("package_views")):
@@ -570,41 +710,44 @@ def generate_vote(
 ) -> Dict[str, Any]:
     llm = llm or LLMClient()
     allowed = [-25, 0, 25] + ([-50, 50] if crisis_mode else [])
-    prompt = (
-        f"你是 FOMC 委员 {role.display_name}（{role.role}）。\n"
-        "现在进入正式投票：请你选择本次利率调整 vote_delta_bps，并给出 50-120 字理由（必须引用 facts/uncertainties 编号）。\n\n"
-        "硬约束：\n"
-        "1) vote_delta_bps 必须属于 allowed_vote_deltas_bps；\n"
-        "2) 只能引用 blackboard 的编号，不得引入新事实；\n"
-        "3) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        f"allowed_vote_deltas_bps={allowed}\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "role": "centrist|hawk|dove",\n'
-        '  "vote_delta_bps": -25|0|25,\n'
-        '  "reason": "...",\n'
-        '  "cited_facts": ["F01","F02"],\n'
-        '  "cited_uncertainties": ["U01"],\n'
-        '  "dissent": false,\n'
-        '  "dissent_sentence": ""\n'
-        "}\n\n"
-        "packages（供参考）：\n"
-        + json.dumps(packages, ensure_ascii=False)
-        + "\n\nblackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\nstance_card:\n"
-        + json.dumps(stance_card, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_vote.md")
+    prompt = _render_template(
+        template,
+        {
+            "role_display_name": role.display_name,
+            "role_role": role.role,
+            "allowed_vote_deltas_bps": json.dumps(allowed, ensure_ascii=False),
+            "packages_json": json.dumps(packages, ensure_ascii=False),
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "stance_card_json": json.dumps(stance_card, ensure_ascii=False),
+        },
     )
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.25,
         max_tokens=700,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="vote",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.25,
+            max_tokens=700,
+        )
+    except Exception:
+        pass
     obj["role"] = role.role
     delta = _to_int(obj.get("vote_delta_bps"))
     if delta not in allowed:
@@ -627,36 +770,41 @@ def secretary_round_summary(
     llm: Optional[LLMClient] = None,
 ) -> Dict[str, Any]:
     llm = llm or LLMClient()
-    prompt = (
-        "你是 FOMC 书记员（Secretary）。\n"
-        "请对本轮公开讨论做结构化记录，便于后续拼装 Minutes 与 Statement。\n\n"
-        "硬约束：\n"
-        "1) 只能基于本轮 transcript 与 blackboard 编号做归纳；\n"
-        "2) 输出必须是 JSON 对象（不要 Markdown，不要代码块）。\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "round": "...",\n'
-        '  "consensus": ["..."],\n'
-        '  "disagreements": ["..."],\n'
-        '  "open_questions_next": ["..."],\n'
-        '  "statement_slot_notes": [{"slot_key": "inflation", "note": "..."}]\n'
-        "}\n\n"
-        f"round={round_name}\n\n"
-        "blackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\ntranscript_blocks:\n"
-        + json.dumps(transcript_blocks, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_secretary_round.md")
+    prompt = _render_template(
+        template,
+        {
+            "round_name": round_name,
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "transcript_blocks_json": json.dumps(transcript_blocks, ensure_ascii=False),
+        },
     )
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.2,
         max_tokens=900,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="secretary_round",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.2,
+            max_tokens=900,
+        )
+    except Exception:
+        pass
     obj["round"] = round_name
     obj["consensus"] = [str(x) for x in _ensure_list(obj.get("consensus"))][:10]
     obj["disagreements"] = [str(x) for x in _ensure_list(obj.get("disagreements"))][:10]
@@ -711,38 +859,45 @@ def chair_write_statement_and_minutes(
     passed = max(tally["cut"], tally["hold"], tally["hike"])
     vote_summary = f"{passed}:{max(0, total - passed)}"
 
-    prompt = (
-        "你是 FOMC 主持人（Chair/Moderator），同时负责起草本次会议的 Statement 与 Minutes 摘要（中文）。\n\n"
-        "硬约束：\n"
-        "1) 不得引入 blackboard 之外的新事实/数值；\n"
-        "2) 必须明确写出政策决定与投票结果，且投票人数必须与本次模拟参会委员数量一致；\n"
-        "3) 严禁写出“9:1/10:0/11:0”等与本次模拟不一致的票数；\n"
-        "4) 输出必须是 JSON 对象，包含 statement_md 与 minutes_summary_md 两个字段（不要 Markdown 代码块）。\n\n"
-        "输出 JSON schema：\n"
-        "{\n"
-        '  "statement_md": "# ...\\n...\\n",\n'
-        '  "minutes_summary_md": "# ...\\n...\\n"\n'
-        "}\n\n"
-        f"本次模拟参会委员 roles={roles_in_vote}（共 {len(roles_in_vote)} 人）\n"
-        f"投票分布统计（必须严格使用，不得改写票数）：{tally}\n"
-        f"投票结果简写（必须严格使用，不得改写票数）：{vote_summary}\n\n"
-        "blackboard:\n"
-        + json.dumps(blackboard, ensure_ascii=False)
-        + "\n\nvotes:\n"
-        + json.dumps(votes, ensure_ascii=False)
-        + "\n\nround_summaries:\n"
-        + json.dumps(round_summaries, ensure_ascii=False)
+    prompt_id, prompt_version, system_prompt, template = _load_prompt_template("meeting_statement_minutes.md")
+    prompt = _render_template(
+        template,
+        {
+            "roles_in_vote": json.dumps(roles_in_vote, ensure_ascii=False),
+            "roles_count": len(roles_in_vote),
+            "tally_json": json.dumps(tally, ensure_ascii=False),
+            "vote_summary": vote_summary,
+            "blackboard_json": json.dumps(blackboard, ensure_ascii=False),
+            "votes_json": json.dumps(votes, ensure_ascii=False),
+            "round_summaries_json": json.dumps(round_summaries, ensure_ascii=False),
+        },
     )
     obj = _llm_json(
         llm,
         [
-            {"role": "system", "content": "Return ONLY valid JSON. Never fabricate facts or numbers."},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         temperature=0.25,
         max_tokens=2000,
         retry=1,
     )
+    try:
+        _log_prompt_run(
+            meeting_id=meeting_id,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            agent_role="chair_statement_minutes",
+            prompt_source="template",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            output_text=json.dumps(obj, ensure_ascii=False),
+            model=llm.config.model,
+            temperature=0.25,
+            max_tokens=2000,
+        )
+    except Exception:
+        pass
     statement = str(obj.get("statement_md") or "").strip()
     minutes = str(obj.get("minutes_summary_md") or "").strip()
     if not statement.startswith("#"):

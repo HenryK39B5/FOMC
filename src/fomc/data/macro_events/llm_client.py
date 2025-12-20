@@ -2,9 +2,107 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 from fomc.infra.llm import LLMClient
+from fomc.config.paths import PROMPT_RUNS_DIR, REPO_ROOT
+
+PROMPT_DIR = REPO_ROOT / "content" / "prompts" / "reports"
+MACRO_MONTHLY_PROMPT_FILE = "macro_monthly_report.md"
+
+
+def _parse_front_matter(raw: str) -> Tuple[dict, str]:
+    if not raw.startswith("---\n"):
+        return {}, raw
+    marker = "\n---\n"
+    end = raw.find(marker, 4)
+    if end == -1:
+        return {}, raw
+    header = raw[4:end].splitlines()
+    body = raw[end + len(marker) :]
+    meta: dict = {}
+    i = 0
+    while i < len(header):
+        line = header[i].rstrip()
+        if not line or line.lstrip().startswith("#"):
+            i += 1
+            continue
+        if ":" not in line:
+            i += 1
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if value == "|":
+            i += 1
+            block_lines = []
+            while i < len(header):
+                raw_line = header[i]
+                if raw_line.startswith("  "):
+                    block_lines.append(raw_line[2:])
+                    i += 1
+                    continue
+                break
+            meta[key] = "\n".join(block_lines).strip()
+            continue
+        meta[key] = value
+        i += 1
+    return meta, body
+
+
+def _load_prompt_template(filename: str) -> tuple[str, str, str, str]:
+    path = PROMPT_DIR / filename
+    raw = path.read_text(encoding="utf-8")
+    meta, template = _parse_front_matter(raw)
+    prompt_id = meta.get("prompt_id") or path.stem
+    prompt_version = meta.get("prompt_version") or "unknown"
+    system_prompt = meta.get("system_prompt") or ""
+    return prompt_id, prompt_version, system_prompt, template.strip()
+
+
+def _record_prompt_run(
+    *,
+    report_month: str,
+    system_prompt: str,
+    user_prompt: str,
+    prompt_id: str,
+    prompt_version: str,
+    prompt_source: str,
+    output_text: str,
+    run_id: Optional[str] = None,
+) -> None:
+    stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    safe_month = report_month.replace("/", "-").replace(" ", "_") if report_month else "unknown"
+    run_dir = PROMPT_RUNS_DIR / "macro"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or stamp
+    log_filename = f"{run_id}_{safe_month}.jsonl"
+    log_path = run_dir / log_filename
+    meta = {
+        "report_type": "macro",
+        "report_month": report_month,
+        "prompt_id": prompt_id,
+        "prompt_version": prompt_version,
+        "prompt_source": prompt_source,
+        "model": LLMClient().config.model,
+        "temperature": 0.3,
+        "max_tokens": 900,
+        "timestamp": stamp,
+        "run_id": run_id,
+        "log_file": log_filename,
+        "prompt_chars": len(user_prompt),
+        "output_chars": len(output_text),
+        "prompt_template_path": str(PROMPT_DIR / f"{prompt_id}.md"),
+        "system_prompt": system_prompt,
+        "user_prompt": user_prompt,
+        "output_text": output_text,
+    }
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(meta, ensure_ascii=False))
+        handle.write("\n")
 
 
 def call_llm(
@@ -124,9 +222,14 @@ def extract_event_keywords(
     return keywords[:max_keywords]
 
 
-def generate_monthly_report(events: List[Dict], model: Optional[str] = None) -> Optional[str]:
+def generate_monthly_report(
+    events: List[Dict],
+    model: Optional[str] = None,
+    report_month: Optional[str] = None,
+) -> Optional[str]:
     if not events:
         return None
+    system_prompt = "你是严谨的宏观事件分析师。"
     prompt = (
         "你是一名宏观经济研究员，请撰写“宏观事件月报”。要求：\n"
         "1) 首段 2-3 句概述本月宏观冲击全貌。\n"
@@ -136,14 +239,38 @@ def generate_monthly_report(events: List[Dict], model: Optional[str] = None) -> 
         "\n事件数据（JSON，含 source_urls/source_domains）：\n"
         f"{events}"
     )
-    return call_llm(
+    prompt_id = "macro_monthly_report"
+    prompt_version = "fallback"
+    prompt_source = "fallback"
+    try:
+        prompt_id, prompt_version, system_prompt, template = _load_prompt_template(MACRO_MONTHLY_PROMPT_FILE)
+        events_json = json.dumps(events, ensure_ascii=False)
+        prompt = template.format(events_json=events_json)
+        prompt_source = "template"
+    except Exception:
+        pass
+    output = call_llm(
         [
-            {"role": "system", "content": "你是严谨的宏观事件分析师。"},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
         model=model,
         max_tokens=900,
     )
+    try:
+        _record_prompt_run(
+            report_month=report_month or "",
+            system_prompt=system_prompt,
+            user_prompt=prompt,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
+            prompt_source=prompt_source,
+            output_text=output,
+            run_id=datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+        )
+    except Exception:
+        pass
+    return output
 
 
 def classify_links_importance(news_items: List[Dict], max_primary: int = 12, model: Optional[str] = None) -> List[int]:
